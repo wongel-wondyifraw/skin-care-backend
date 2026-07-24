@@ -5,12 +5,8 @@ import { TelegramWebhookService } from './telegram/telegram-webhook.service.js';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Allow the Next.js frontend to call this API
-  app.enableCors({
-    origin: ['http://localhost:3000', 'http://localhost:3001'],
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    credentials: true,
-  });
+  // Allow all origins — this is an admin-only internal API
+  app.enableCors();
 
   // Global prefix so all routes live under /api
   app.setGlobalPrefix('api');
