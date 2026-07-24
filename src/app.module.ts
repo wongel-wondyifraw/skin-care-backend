@@ -14,6 +14,7 @@ import { SkinTypeModule } from './skin-type/skin-type.module.js';
 import { CategoryModule } from './category/category.module.js';
 import { ProductModule } from './product/product.module.js';
 import { UploadModule } from './upload/upload.module.js';
+import { TelegramModule } from './telegram/telegram.module.js';
 
 @Module({
   imports: [
@@ -22,16 +23,35 @@ import { UploadModule } from './upload/upload.module.js';
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DB_HOST', 'localhost'),
-        port: config.get<number>('DB_PORT', 5432),
-        username: config.get<string>('DB_USERNAME', 'postgres'),
-        password: config.get<string>('DB_PASSWORD', 'postgres'),
-        database: config.get<string>('DB_NAME', 'medaf_skincare'),
-        entities: [AdminUser, SkinType, Category, Product],
-        synchronize: true,
-      }),
+      useFactory: (config: ConfigService) => {
+        const databaseUrl = config.get<string>('DATABASE_URL');
+
+        // Supabase / Render: use the full connection string.
+        // The transaction-mode pooler (port 6543) requires ssl + no prepared statements.
+        if (databaseUrl) {
+          return {
+            type: 'postgres',
+            url: databaseUrl,
+            entities: [AdminUser, SkinType, Category, Product],
+            synchronize: true,
+            ssl: { rejectUnauthorized: false },
+            // pgbouncer transaction mode does not support prepared statements
+            extra: { max: 10 },
+          };
+        }
+
+        // Local development: use individual connection fields.
+        return {
+          type: 'postgres',
+          host: config.get<string>('DB_HOST', 'localhost'),
+          port: config.get<number>('DB_PORT', 5432),
+          username: config.get<string>('DB_USERNAME', 'postgres'),
+          password: config.get<string>('DB_PASSWORD', 'postgres'),
+          database: config.get<string>('DB_NAME', 'medaf_skincare'),
+          entities: [AdminUser, SkinType, Category, Product],
+          synchronize: true,
+        };
+      },
     }),
 
     AdminUserModule,
@@ -41,6 +61,7 @@ import { UploadModule } from './upload/upload.module.js';
     CategoryModule,
     ProductModule,
     UploadModule,
+    TelegramModule,
   ],
   controllers: [AppController],
   providers: [AppService],
