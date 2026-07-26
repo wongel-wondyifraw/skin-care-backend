@@ -24,4 +24,7 @@ async function bootstrap() {
   // In polling mode this is a no-op.
   await webhookService.syncWebhook();
 }
-bootstrap();
+bootstrap().catch((err) => {
+  console.error('Bootstrap failed:', err);
+  process.exit(1);
+});

@@ -15,7 +15,8 @@ export class TelegramWebhookService {
 
   isEnabled(): boolean {
     return (
-      (this.config.get<string>('TELEGRAM_USE_WEBHOOK') || '').toLowerCase() === 'true'
+      (this.config.get<string>('TELEGRAM_USE_WEBHOOK') || '').toLowerCase() ===
+      'true'
     );
   }
 
@@ -51,7 +52,8 @@ export class TelegramWebhookService {
   }
 
   private webhookPath(): string {
-    const raw = this.config.get<string>('TELEGRAM_WEBHOOK_PATH') || '/telegram/webhook';
+    const raw =
+      this.config.get<string>('TELEGRAM_WEBHOOK_PATH') || '/telegram/webhook';
     const trimmed = raw.trim();
     return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
   }

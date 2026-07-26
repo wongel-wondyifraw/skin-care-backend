@@ -5,10 +5,14 @@ import { TelegramService } from './telegram.service.js';
 import { TelegramController } from './telegram.controller.js';
 import { TelegramWebhookService } from './telegram-webhook.service.js';
 import { TelegramUpdate } from './telegram.update.js';
+import { CustomerModule } from '../customer/customer.module.js';
+import { SkinTypeModule } from '../skin-type/skin-type.module.js';
 
 @Module({
   imports: [
     ConfigModule,
+    CustomerModule,
+    SkinTypeModule,
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -17,7 +21,8 @@ import { TelegramUpdate } from './telegram.update.js';
         if (!token) throw new Error('TELEGRAM_BOT_TOKEN is missing from .env');
 
         const useWebhook =
-          (config.get<string>('TELEGRAM_USE_WEBHOOK') || '').toLowerCase() === 'true';
+          (config.get<string>('TELEGRAM_USE_WEBHOOK') || '').toLowerCase() ===
+          'true';
 
         new Logger('TelegramModule').log(
           `Telegram mode: ${useWebhook ? 'webhook (Telegraf polling disabled)' : 'polling'}`,

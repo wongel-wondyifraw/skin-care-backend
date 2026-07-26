@@ -1,4 +1,11 @@
-import { Entity, PrimaryGeneratedColumn, Column, CreateDateColumn, ManyToOne, JoinColumn } from 'typeorm';
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
+} from 'typeorm';
 import { Category } from '../category/category.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
 
@@ -22,14 +29,22 @@ export class Product {
   @Column({ nullable: true })
   categoryId: string;
 
-  @ManyToOne(() => Category, { eager: true, nullable: true, onDelete: 'SET NULL' })
+  @ManyToOne(() => Category, {
+    eager: true,
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'categoryId' })
   category: Category;
 
   @Column({ nullable: true })
   skinTypeId: string;
 
-  @ManyToOne(() => SkinType, { eager: true, nullable: true, onDelete: 'SET NULL' })
+  @ManyToOne(() => SkinType, {
+    eager: true,
+    nullable: true,
+    onDelete: 'SET NULL',
+  })
   @JoinColumn({ name: 'skinTypeId' })
   skinType: SkinType;
 

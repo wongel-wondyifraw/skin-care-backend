@@ -24,8 +24,13 @@ export class CategoryService {
     return cat;
   }
 
-  async create(data: { name: string; description?: string }): Promise<Category> {
-    const existing = await this.repo.findOne({ where: { name: data.name.trim() } });
+  async create(data: {
+    name: string;
+    description?: string;
+  }): Promise<Category> {
+    const existing = await this.repo.findOne({
+      where: { name: data.name.trim() },
+    });
     if (existing) throw new ConflictException('Category name already exists');
     const cat = this.repo.create({
       name: data.name.trim(),
@@ -34,10 +39,14 @@ export class CategoryService {
     return this.repo.save(cat);
   }
 
-  async update(id: string, data: { name?: string; description?: string }): Promise<Category> {
+  async update(
+    id: string,
+    data: { name?: string; description?: string },
+  ): Promise<Category> {
     const cat = await this.findOne(id);
     if (data.name) cat.name = data.name.trim();
-    if (data.description !== undefined) cat.description = data.description.trim() || null;
+    if (data.description !== undefined)
+      cat.description = data.description.trim() || null;
     return this.repo.save(cat);
   }
 

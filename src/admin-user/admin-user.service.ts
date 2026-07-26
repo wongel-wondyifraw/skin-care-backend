@@ -76,10 +76,13 @@ export class AdminUserService {
 
     if (data.newPassword) {
       if (!data.currentPassword) {
-        throw new BadRequestException('Current password is required to set a new password');
+        throw new BadRequestException(
+          'Current password is required to set a new password',
+        );
       }
       const match = await bcrypt.compare(data.currentPassword, user.password);
-      if (!match) throw new BadRequestException('Current password is incorrect');
+      if (!match)
+        throw new BadRequestException('Current password is incorrect');
       user.password = await bcrypt.hash(data.newPassword, 10);
     }
 

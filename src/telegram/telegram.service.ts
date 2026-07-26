@@ -19,7 +19,9 @@ export class TelegramService {
       this.logger.log(`Message sent to chatId=${chatId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to send message to chatId=${chatId}: ${message}`);
+      this.logger.error(
+        `Failed to send message to chatId=${chatId}: ${message}`,
+      );
       throw new BadRequestException(`Telegram send failed: ${message}`);
     }
   }

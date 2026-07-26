@@ -24,7 +24,10 @@ export class SkinTypeService {
     return skin;
   }
 
-  async create(data: { name: string; description?: string }): Promise<SkinType> {
+  async create(data: {
+    name: string;
+    description?: string;
+  }): Promise<SkinType> {
     const existing = await this.repo.findOne({
       where: { name: data.name.trim() },
     });

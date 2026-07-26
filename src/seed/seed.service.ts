@@ -14,12 +14,22 @@ export class SeedService implements OnApplicationBootstrap {
 
   async onApplicationBootstrap(): Promise<void> {
     const name = this.configService.get<string>('ADMIN_NAME', 'Admin');
-    const email = this.configService.get<string>('ADMIN_EMAIL', 'admin@skincare.com');
-    const plainPassword = this.configService.get<string>('ADMIN_PASSWORD', 'admin@123');
+    const email = this.configService.get<string>(
+      'ADMIN_EMAIL',
+      'admin@skincare.com',
+    );
+    const plainPassword = this.configService.get<string>(
+      'ADMIN_PASSWORD',
+      'admin@123',
+    );
 
     const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
-    await this.adminUserService.upsertSeedAdmin({ name, email, hashedPassword });
+    await this.adminUserService.upsertSeedAdmin({
+      name,
+      email,
+      hashedPassword,
+    });
     this.logger.log(`Admin seed checked — ${email}`);
   }
 }

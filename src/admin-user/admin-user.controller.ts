@@ -1,11 +1,4 @@
-import {
-  Body,
-  Controller,
-  Patch,
-  Post,
-  Req,
-  UseGuards,
-} from '@nestjs/common';
+import { Body, Controller, Patch, Post, Req, UseGuards } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { AdminUserService } from './admin-user.service.js';
 
@@ -20,9 +13,7 @@ export class AdminUserController {
 
   /** POST /api/admin-users — create a new admin */
   @Post()
-  createAdmin(
-    @Body() body: { name: string; email: string; password: string },
-  ) {
+  createAdmin(@Body() body: { name: string; email: string; password: string }) {
     return this.adminUserService.createAdmin(body);
   }
 

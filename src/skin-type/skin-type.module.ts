@@ -8,5 +8,6 @@ import { SkinTypeController } from './skin-type.controller.js';
   imports: [TypeOrmModule.forFeature([SkinType])],
   providers: [SkinTypeService],
   controllers: [SkinTypeController],
+  exports: [SkinTypeService],
 })
 export class SkinTypeModule {}

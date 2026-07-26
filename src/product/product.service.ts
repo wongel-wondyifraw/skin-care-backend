@@ -33,7 +33,10 @@ export class ProductService {
     const skinTypeRepo = this.productRepository.manager.getRepository(SkinType);
     let allSkin = await skinTypeRepo.findOne({ where: { name: 'All' } });
     if (!allSkin) {
-      allSkin = skinTypeRepo.create({ name: 'All', description: 'Suitable for all skin types' });
+      allSkin = skinTypeRepo.create({
+        name: 'All',
+        description: 'Suitable for all skin types',
+      });
       allSkin = await skinTypeRepo.save(allSkin);
     }
     return allSkin;
@@ -50,7 +53,10 @@ export class ProductService {
   }
 
   async update(id: string, data: Partial<Product>): Promise<Product> {
-    if (data.hasOwnProperty('skinTypeId') && !data.skinTypeId) {
+    if (
+      Object.prototype.hasOwnProperty.call(data, 'skinTypeId') &&
+      !data.skinTypeId
+    ) {
       const allSkin = await this.findOrCreateAllSkinType();
       data.skinTypeId = allSkin.id;
     }

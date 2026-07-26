@@ -1,4 +1,8 @@
-import { Injectable, UnauthorizedException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  UnauthorizedException,
+  BadRequestException,
+} from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { AdminUserService } from '../admin-user/admin-user.service.js';
@@ -25,7 +29,9 @@ export class AuthService {
       throw new BadRequestException('Email and password are required');
     }
 
-    const user = await this.adminUserService.findByEmail(dto.email.toLowerCase().trim());
+    const user = await this.adminUserService.findByEmail(
+      dto.email.toLowerCase().trim(),
+    );
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
     }

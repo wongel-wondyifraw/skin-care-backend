@@ -22,12 +22,11 @@ export class UploadController {
 
     try {
       const result = await this.cloudinaryService.uploadFile(file);
-      // We return the secure_url and assetId from Cloudinary
-      return { 
+      return {
         url: result.secure_url,
-        assetId: result.asset_id || result.public_id 
+        assetId: result.asset_id || result.public_id,
       };
-    } catch (error) {
+    } catch {
       throw new BadRequestException('Image upload failed');
     }
   }
