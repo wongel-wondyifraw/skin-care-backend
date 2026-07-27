@@ -1,22 +1,37 @@
 import { Logger } from '@nestjs/common';
-import { Ctx, On, Start, Update } from 'nestjs-telegraf';
+import { ConfigService } from '@nestjs/config';
+import { Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { Message } from 'telegraf/types';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { CustomerService } from '../customer/customer.service.js';
 import {
+  AdminSessionStore,
   RegistrationSession,
   RegistrationSessionStore,
 } from './registration.session.js';
+
+// ─── Persistent admin keyboard shown at the bottom of the chat ──────────────
+const ADMIN_KEYBOARD = {
+  keyboard: [
+    [{ text: '📦 Products' }, { text: '👥 Customers' }],
+    [{ text: '🛒 Orders' }, { text: '⚙️ Settings' }],
+    [{ text: '🚪 Logout' }],
+  ],
+  resize_keyboard: true,
+  // NOT one_time_keyboard — stays visible (sticky) until logout
+};
 
 @Update()
 export class TelegramUpdate {
   private readonly logger = new Logger(TelegramUpdate.name);
   private readonly sessions = new RegistrationSessionStore();
+  private readonly adminSessions = new AdminSessionStore();
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
     private readonly customerService: CustomerService,
+    private readonly config: ConfigService,
   ) {}
 
   // ─────────────────────────────────────────────
@@ -30,7 +45,12 @@ export class TelegramUpdate {
 
     this.logger.log(`/start from chatId=${chatId}`);
 
-    // Check if user already completed registration
+    // If admin session is active, show admin menu instead
+    if (this.adminSessions.isAuthenticated(chatId)) {
+      await this.sendAdminMenu(ctx, 'You are already in admin mode.');
+      return;
+    }
+
     const existing = await this.customerService.findByTelegramId(telegramId);
     if (existing) {
       await ctx.reply(
@@ -41,7 +61,6 @@ export class TelegramUpdate {
       return;
     }
 
-    // Start a fresh registration session
     this.sessions.set(chatId, { step: 'awaiting_name' });
 
     await ctx.reply(
@@ -53,42 +72,184 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
-  // All text / contact messages go through here
+  // /admin — enter admin mode
+  // ─────────────────────────────────────────────
+  @Command('admin')
+  async onAdminCommand(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+
+    // Already authenticated — just show the menu
+    if (this.adminSessions.isAuthenticated(chatId)) {
+      await this.sendAdminMenu(ctx, 'You are already in admin mode.');
+      return;
+    }
+
+    // Clear any in-progress registration so the password answer
+    // is not accidentally processed as a registration step
+    this.sessions.delete(chatId);
+
+    this.adminSessions.set(chatId, { step: 'awaiting_password' });
+
+    await ctx.reply(
+      `🔐 Admin access requested.\n\nPlease enter the admin password:`,
+      { reply_markup: { remove_keyboard: true } },
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // All text / contact messages
   // ─────────────────────────────────────────────
   @On('message')
   async onMessage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
-    const session = this.sessions.get(chatId);
-
-    // No active registration session — ignore
-    if (!session) return;
-
     const message = ctx.message as Message.TextMessage & Message.ContactMessage;
+    const text = ('text' in message ? message.text : '').trim();
+
+    // ── Admin password verification ──────────────────────────────
+    const adminSession = this.adminSessions.get(chatId);
+    if (adminSession?.step === 'awaiting_password') {
+      await this.handleAdminPassword(ctx, chatId, text);
+      return;
+    }
+
+    // ── Admin menu button presses ────────────────────────────────
+    if (this.adminSessions.isAuthenticated(chatId)) {
+      await this.handleAdminMenuAction(ctx, chatId, text);
+      return;
+    }
+
+    // ── Registration flow ────────────────────────────────────────
+    const session = this.sessions.get(chatId);
+    if (!session) return;
 
     switch (session.step) {
       case 'awaiting_name':
         await this.handleName(ctx, chatId, session, message);
         break;
-
       case 'awaiting_phone':
         await this.handlePhone(ctx, chatId, session, message);
         break;
-
       case 'awaiting_skin_type':
         await this.handleSkinType(ctx, chatId, session, message);
         break;
-
       case 'awaiting_address':
         await this.handleAddress(ctx, chatId, session, message);
         break;
-
       default:
         break;
     }
   }
 
   // ─────────────────────────────────────────────
-  // Step handlers
+  // Admin helpers
+  // ─────────────────────────────────────────────
+
+  private async handleAdminPassword(
+    ctx: Context,
+    chatId: string,
+    input: string,
+  ) {
+    const correctPassword = this.config.get<string>('TELEGRAM_ADMIN_PASSWORD');
+
+    if (input !== correctPassword) {
+      await ctx.reply(
+        `❌ Incorrect password. Try again or send /admin to start over.`,
+      );
+      // Keep the session alive so they can retry without re-sending /admin
+      return;
+    }
+
+    // Authenticated
+    this.adminSessions.set(chatId, { step: 'authenticated' });
+    this.logger.log(`Admin authenticated for chatId=${chatId}`);
+    await this.sendAdminMenu(ctx, `✅ Access granted. Welcome, Admin!`);
+  }
+
+  private async sendAdminMenu(ctx: Context, headerText: string) {
+    await ctx.reply(
+      `${headerText}\n\n` +
+        `Use the buttons below to manage your store:`,
+      { reply_markup: ADMIN_KEYBOARD },
+    );
+  }
+
+  private async handleAdminMenuAction(
+    ctx: Context,
+    chatId: string,
+    text: string,
+  ) {
+    switch (text) {
+      case '📦 Products':
+        await ctx.reply(
+          `📦 Products\n\nManage your product catalogue via the web admin panel:\n` +
+            `https://skin-care-frontend-ecru.vercel.app/admin/products`,
+          { reply_markup: ADMIN_KEYBOARD },
+        );
+        break;
+
+      case '👥 Customers':
+        await this.handleCustomersAction(ctx);
+        break;
+
+      case '🛒 Orders':
+        await ctx.reply(
+          `🛒 Orders\n\nOrder management is coming soon. Stay tuned!`,
+          { reply_markup: ADMIN_KEYBOARD },
+        );
+        break;
+
+      case '⚙️ Settings':
+        await ctx.reply(
+          `⚙️ Settings\n\nManage your store settings via the web admin panel:\n` +
+            `https://skin-care-frontend-ecru.vercel.app/admin/settings`,
+          { reply_markup: ADMIN_KEYBOARD },
+        );
+        break;
+
+      case '🚪 Logout':
+        this.adminSessions.delete(chatId);
+        await ctx.reply(
+          `👋 You have been logged out of admin mode.`,
+          { reply_markup: { remove_keyboard: true } },
+        );
+        break;
+
+      default:
+        // Unrecognised text while in admin mode — remind them of the menu
+        await this.sendAdminMenu(ctx, `Use the buttons below:`);
+        break;
+    }
+  }
+
+  private async handleCustomersAction(ctx: Context) {
+    const customers = await this.customerService.findAll();
+
+    if (customers.length === 0) {
+      await ctx.reply(`👥 No registered customers yet.`, {
+        reply_markup: ADMIN_KEYBOARD,
+      });
+      return;
+    }
+
+    const summary = customers
+      .slice(0, 20) // cap at 20 to avoid hitting Telegram's message length limit
+      .map(
+        (c, i) =>
+          `${i + 1}. ${c.fullName} — ${c.phone}`,
+      )
+      .join('\n');
+
+    const total = customers.length;
+    const note = total > 20 ? `\n\n...and ${total - 20} more.` : '';
+
+    await ctx.reply(
+      `👥 Registered Customers (${total} total)\n\n${summary}${note}`,
+      { reply_markup: ADMIN_KEYBOARD },
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // Registration step handlers
   // ─────────────────────────────────────────────
 
   private async handleName(
@@ -130,7 +291,6 @@ export class TelegramUpdate {
     session: RegistrationSession,
     message: Message.TextMessage & Message.ContactMessage,
   ) {
-    // Accept either a shared contact or a typed number
     let phone: string | undefined;
 
     if ('contact' in message && message.contact?.phone_number) {
@@ -150,11 +310,9 @@ export class TelegramUpdate {
     session.step = 'awaiting_skin_type';
     this.sessions.set(chatId, session);
 
-    // Load skin types from DB and present as a keyboard
     const skinTypes = await this.skinTypeService.findAll();
 
     if (skinTypes.length === 0) {
-      // No skin types seeded yet — skip and store null
       session.skinTypeId = null;
       session.step = 'awaiting_address';
       this.sessions.set(chatId, session);
@@ -196,7 +354,6 @@ export class TelegramUpdate {
       (st) => st.name.toLowerCase() === input.toLowerCase(),
     );
 
-    // Accept whatever they typed — store null if no match
     session.skinTypeId = match?.id ?? null;
     session.step = 'awaiting_address';
     this.sessions.set(chatId, session);
@@ -224,7 +381,6 @@ export class TelegramUpdate {
     session.step = 'complete';
     this.sessions.set(chatId, session);
 
-    // Save to the customers table
     try {
       await this.customerService.create({
         telegramId: ctx.from!.id,
@@ -234,7 +390,6 @@ export class TelegramUpdate {
         skinTypeId: session.skinTypeId ?? null,
       });
 
-      // Clean up the session
       this.sessions.delete(chatId);
 
       await ctx.reply(
@@ -258,7 +413,6 @@ export class TelegramUpdate {
         { reply_markup: { remove_keyboard: true } },
       );
 
-      // Reset session so they can start over
       this.sessions.delete(chatId);
     }
   }

@@ -28,6 +28,14 @@ export class CustomerService {
     });
   }
 
+  /** Returns all registered customers — used by the admin bot menu. */
+  findAll(): Promise<Customer[]> {
+    return this.repo.find({
+      order: { createdAt: 'DESC' },
+      relations: { skinType: true },
+    });
+  }
+
   /** Persists a brand-new customer coming from the registration flow. */
   async create(dto: CreateCustomerDto): Promise<Customer> {
     const customer = this.repo.create({

@@ -1,12 +1,16 @@
 /**
- * Lightweight in-memory session store for the multi-step registration flow.
- * Keyed by Telegram chatId (string). Each entry tracks which step the user
- * is currently on and the data they have provided so far.
+ * Unified in-memory session store.
  *
- * Note: this lives in process memory. On a single-instance deployment (Render
- * free tier) this is fine. If you ever scale to multiple instances, swap this
- * out for a Redis-backed store.
+ * Two independent session types live here:
+ *   - RegistrationSession  — multi-step user onboarding flow
+ *   - AdminSession         — admin mode (authenticated via password)
+ *
+ * Keyed by Telegram chatId (string).
+ * Single-instance deployment (Render free tier) is fine with an in-memory Map.
+ * Swap for Redis if you ever go multi-instance.
  */
+
+// ─── Registration ──────────────────────────────────────────────────────────
 
 export type RegistrationStep =
   | 'awaiting_name'
@@ -40,5 +44,35 @@ export class RegistrationSessionStore {
 
   has(chatId: string): boolean {
     return this.sessions.has(chatId);
+  }
+}
+
+// ─── Admin ─────────────────────────────────────────────────────────────────
+
+export type AdminStep =
+  | 'awaiting_password' // /admin entered, waiting for password
+  | 'authenticated';    // password accepted, admin menu is active
+
+export interface AdminSession {
+  step: AdminStep;
+}
+
+export class AdminSessionStore {
+  private readonly sessions = new Map<string, AdminSession>();
+
+  get(chatId: string): AdminSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  set(chatId: string, session: AdminSession): void {
+    this.sessions.set(chatId, session);
+  }
+
+  delete(chatId: string): void {
+    this.sessions.delete(chatId);
+  }
+
+  isAuthenticated(chatId: string): boolean {
+    return this.sessions.get(chatId)?.step === 'authenticated';
   }
 }
