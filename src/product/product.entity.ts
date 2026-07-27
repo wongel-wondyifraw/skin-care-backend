@@ -51,6 +51,9 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   stock: number;
 
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  price: number;
+
   @CreateDateColumn()
   createdAt: Date;
 }
