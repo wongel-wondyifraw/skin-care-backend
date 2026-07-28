@@ -53,15 +53,19 @@ export class GeminiService {
 
     let prompt =
       `You are a professional skincare consultant at Medaf Skin Care.\n\n` +
-      `A customer with **${skinType}** skin type is asking for personalized skincare advice.\n\n` +
-      `Here are the products currently available in our store:\n\n` +
+      `A customer with ${skinType} skin type is asking for personalized skincare advice.\n\n` +
+      `Here are the ONLY products currently available in our store:\n\n` +
       `${productList}\n\n` +
+      `STRICT RULES — YOU MUST FOLLOW THESE:\n` +
+      `- You MUST ONLY recommend products from the list above. Do NOT invent, suggest, or mention any product that is not in the list above.\n` +
+      `- If a product name is not in the list above, do NOT include it in your response under any circumstances.\n` +
+      `- Do NOT say things like "you could also try a moisturizer" unless a moisturizer is explicitly in the list above.\n` +
+      `- Only recommend what is actually listed. If only one product is available, recommend only that one.\n\n` +
       `Based on the customer's skin type (${skinType}), please:\n` +
-      `1. Recommend a simple daily skincare routine (morning and evening).\n` +
-      `2. Choose 3-5 products from our available catalog that are most suitable for this skin type.\n` +
-      `3. For each recommended product, explain WHY it's recommended and how to use it.\n` +
-      `4. If a product is OUT OF STOCK, mention it clearly and suggest they check back later or contact us.\n` +
-      `5. Keep the tone friendly, warm, and professional.\n\n` +
+      `1. Recommend a simple daily skincare routine (morning and evening) using ONLY the products listed above.\n` +
+      `2. For each product you recommend, explain WHY it is suitable and how to use it.\n` +
+      `3. If a product is OUT OF STOCK, mention it clearly and suggest they check back later or contact us.\n` +
+      `4. Keep the tone friendly, warm, and professional.\n\n` +
       `IMPORTANT FORMATTING RULES:\n` +
       `- DO NOT use markdown syntax like *, **, #, ##, or ###\n` +
       `- Use plain text only with emojis for visual appeal\n` +
