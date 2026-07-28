@@ -15,7 +15,8 @@ export class GeminiService {
       throw new Error('GEMINI_API_KEY is missing from .env');
     }
     this.genAI = new GoogleGenerativeAI(apiKey);
-    this.model = this.genAI.getGenerativeModel({ model: 'gemini-pro' });
+    // Use gemini-1.5-flash (faster) or gemini-1.5-pro (more capable)
+    this.model = this.genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
   }
 
   /**
