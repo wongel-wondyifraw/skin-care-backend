@@ -51,4 +51,19 @@ export class CustomerService {
     );
     return saved;
   }
+
+  /** Updates an existing customer's profile. */
+  async update(
+    id: string,
+    data: Partial<Pick<Customer, 'fullName' | 'phone' | 'address' | 'skinTypeId'>>,
+  ): Promise<Customer> {
+    await this.repo.update(id, data);
+    const updated = await this.repo.findOne({
+      where: { id },
+      relations: { skinType: true },
+    });
+    if (!updated) throw new Error('Customer not found after update');
+    this.logger.log(`Customer profile updated: ${updated.fullName} (id=${id})`);
+    return updated;
+  }
 }

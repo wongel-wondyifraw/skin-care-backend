@@ -7,6 +7,8 @@ import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { CustomerService } from '../customer/customer.service.js';
 import {
   AdminSessionStore,
+  ProfileEditSession,
+  ProfileEditSessionStore,
   RegistrationSession,
   RegistrationSessionStore,
 } from './registration.session.js';
@@ -19,7 +21,6 @@ const ADMIN_KEYBOARD = {
     [{ text: '🚪 Logout' }],
   ],
   resize_keyboard: true,
-  // NOT one_time_keyboard — stays visible (sticky) until logout
 };
 
 @Update()
@@ -27,6 +28,7 @@ export class TelegramUpdate {
   private readonly logger = new Logger(TelegramUpdate.name);
   private readonly sessions = new RegistrationSessionStore();
   private readonly adminSessions = new AdminSessionStore();
+  private readonly profileEditSessions = new ProfileEditSessionStore();
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
@@ -45,7 +47,6 @@ export class TelegramUpdate {
 
     this.logger.log(`/start from chatId=${chatId}`);
 
-    // If admin session is active, show admin menu instead
     if (this.adminSessions.isAuthenticated(chatId)) {
       await this.sendAdminMenu(ctx, 'You are already in admin mode.');
       return;
@@ -56,7 +57,8 @@ export class TelegramUpdate {
       await ctx.reply(
         `Welcome back, ${existing.fullName}! 👋\n\n` +
           `You are already registered with Medaf Skin Care. 🌿\n` +
-          `We will keep you updated on new arrivals and offers!`,
+          `We will keep you updated on new arrivals and offers!\n\n` +
+          `💡 Tip: Send /profile to view or edit your details.`,
       );
       return;
     }
@@ -72,21 +74,68 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
+  // /profile — view & edit user profile
+  // ─────────────────────────────────────────────
+  @Command('profile')
+  async onProfileCommand(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    const telegramId = ctx.from!.id;
+
+    // Clear any active flows so profile takes priority
+    this.sessions.delete(chatId);
+
+    const customer = await this.customerService.findByTelegramId(telegramId);
+    if (!customer) {
+      await ctx.reply(
+        `You are not registered yet. Send /start to create your profile.`,
+      );
+      return;
+    }
+
+    // Show current profile data
+    const skinTypeName = customer.skinType?.name ?? 'Not specified';
+
+    await ctx.reply(
+      `👤 Your Profile\n\n` +
+        `📝 Name: ${customer.fullName}\n` +
+        `📞 Phone: ${customer.phone}\n` +
+        `🌿 Skin type: ${skinTypeName}\n` +
+        `📍 Address: ${customer.address}\n\n` +
+        `To edit, choose a field:`,
+      {
+        reply_markup: {
+          keyboard: [
+            [{ text: '📝 Edit Name' }, { text: '📞 Edit Phone' }],
+            [{ text: '🌿 Edit Skin Type' }, { text: '📍 Edit Address' }],
+            [{ text: '❌ Cancel' }],
+          ],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
+    );
+
+    // Start profile edit session
+    this.profileEditSessions.set(chatId, {
+      step: 'choosing_field',
+      customerId: customer.id,
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // /admin — enter admin mode
   // ─────────────────────────────────────────────
   @Command('admin')
   async onAdminCommand(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
 
-    // Already authenticated — just show the menu
     if (this.adminSessions.isAuthenticated(chatId)) {
       await this.sendAdminMenu(ctx, 'You are already in admin mode.');
       return;
     }
 
-    // Clear any in-progress registration so the password answer
-    // is not accidentally processed as a registration step
     this.sessions.delete(chatId);
+    this.profileEditSessions.delete(chatId);
 
     this.adminSessions.set(chatId, { step: 'awaiting_password' });
 
@@ -118,6 +167,13 @@ export class TelegramUpdate {
       return;
     }
 
+    // ── Profile edit flow ────────────────────────────────────────
+    const profileSession = this.profileEditSessions.get(chatId);
+    if (profileSession) {
+      await this.handleProfileEditFlow(ctx, chatId, profileSession, message);
+      return;
+    }
+
     // ── Registration flow ────────────────────────────────────────
     const session = this.sessions.get(chatId);
     if (!session) return;
@@ -141,6 +197,252 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
+  // Profile edit flow
+  // ─────────────────────────────────────────────
+
+  private async handleProfileEditFlow(
+    ctx: Context,
+    chatId: string,
+    session: ProfileEditSession,
+    message: Message.TextMessage & Message.ContactMessage,
+  ) {
+    const text = ('text' in message ? message.text : '').trim();
+
+    // ── Step 1: User chooses which field to edit ──
+    if (session.step === 'choosing_field') {
+      if (text === '❌ Cancel') {
+        this.profileEditSessions.delete(chatId);
+        await ctx.reply(`Profile edit cancelled.`, {
+          reply_markup: { remove_keyboard: true },
+        });
+        return;
+      }
+
+      if (text === '📝 Edit Name') {
+        session.step = 'awaiting_name';
+        session.field = 'name';
+        this.profileEditSessions.set(chatId, session);
+        await ctx.reply(`What is your new full name?`, {
+          reply_markup: { remove_keyboard: true },
+        });
+        return;
+      }
+
+      if (text === '📞 Edit Phone') {
+        session.step = 'awaiting_phone';
+        session.field = 'phone';
+        this.profileEditSessions.set(chatId, session);
+        await ctx.reply(
+          `Share your new phone number.\nYou can tap the button or type it manually.`,
+          {
+            reply_markup: {
+              keyboard: [
+                [
+                  {
+                    text: '📱 Share my phone number',
+                    request_contact: true,
+                  },
+                ],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      if (text === '🌿 Edit Skin Type') {
+        session.step = 'awaiting_skin_type';
+        session.field = 'skinType';
+        this.profileEditSessions.set(chatId, session);
+
+        const skinTypes = await this.skinTypeService.findAll();
+        if (skinTypes.length === 0) {
+          await ctx.reply(
+            `No skin types available. Contact support to update this.`,
+            { reply_markup: { remove_keyboard: true } },
+          );
+          this.profileEditSessions.delete(chatId);
+          return;
+        }
+
+        const keyboard = skinTypes.map((st) => [{ text: st.name }]);
+        await ctx.reply(`Choose your new skin type:`, {
+          reply_markup: {
+            keyboard,
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        });
+        return;
+      }
+
+      if (text === '📍 Edit Address') {
+        session.step = 'awaiting_address';
+        session.field = 'address';
+        this.profileEditSessions.set(chatId, session);
+        await ctx.reply(`What is your new delivery address?`, {
+          reply_markup: { remove_keyboard: true },
+        });
+        return;
+      }
+
+      await ctx.reply(`Please choose a field to edit using the buttons.`);
+      return;
+    }
+
+    // ── Step 2: User provides new value ──
+    switch (session.step) {
+      case 'awaiting_name':
+        await this.handleProfileEditName(ctx, chatId, session, message);
+        break;
+      case 'awaiting_phone':
+        await this.handleProfileEditPhone(ctx, chatId, session, message);
+        break;
+      case 'awaiting_skin_type':
+        await this.handleProfileEditSkinType(ctx, chatId, session, message);
+        break;
+      case 'awaiting_address':
+        await this.handleProfileEditAddress(ctx, chatId, session, message);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private async handleProfileEditName(
+    ctx: Context,
+    chatId: string,
+    session: ProfileEditSession,
+    message: Message.TextMessage,
+  ) {
+    const name = message.text?.trim();
+    if (!name || name.length < 2) {
+      await ctx.reply(
+        'Please enter a valid name (at least 2 characters).',
+      );
+      return;
+    }
+
+    try {
+      await this.customerService.update(session.customerId, {
+        fullName: name,
+      });
+      this.profileEditSessions.delete(chatId);
+      await ctx.reply(`✅ Your name has been updated to: ${name}`, {
+        reply_markup: { remove_keyboard: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to update name: ${msg}`);
+      await ctx.reply(`Failed to update. Please try again later.`, {
+        reply_markup: { remove_keyboard: true },
+      });
+      this.profileEditSessions.delete(chatId);
+    }
+  }
+
+  private async handleProfileEditPhone(
+    ctx: Context,
+    chatId: string,
+    session: ProfileEditSession,
+    message: Message.TextMessage & Message.ContactMessage,
+  ) {
+    let phone: string | undefined;
+
+    if ('contact' in message && message.contact?.phone_number) {
+      phone = message.contact.phone_number;
+    } else if ('text' in message && message.text) {
+      phone = message.text.trim();
+    }
+
+    if (!phone || phone.length < 7) {
+      await ctx.reply('Please share a valid phone number.');
+      return;
+    }
+
+    try {
+      await this.customerService.update(session.customerId, { phone });
+      this.profileEditSessions.delete(chatId);
+      await ctx.reply(`✅ Your phone has been updated to: ${phone}`, {
+        reply_markup: { remove_keyboard: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to update phone: ${msg}`);
+      await ctx.reply(`Failed to update. Please try again later.`, {
+        reply_markup: { remove_keyboard: true },
+      });
+      this.profileEditSessions.delete(chatId);
+    }
+  }
+
+  private async handleProfileEditSkinType(
+    ctx: Context,
+    chatId: string,
+    session: ProfileEditSession,
+    message: Message.TextMessage,
+  ) {
+    const input = message.text?.trim();
+    if (!input) {
+      await ctx.reply('Please select a skin type from the options.');
+      return;
+    }
+
+    const skinTypes = await this.skinTypeService.findAll();
+    const match = skinTypes.find(
+      (st) => st.name.toLowerCase() === input.toLowerCase(),
+    );
+
+    try {
+      await this.customerService.update(session.customerId, {
+        skinTypeId: match?.id ?? null,
+      });
+      this.profileEditSessions.delete(chatId);
+      const displayName = match ? match.name : 'Not specified';
+      await ctx.reply(`✅ Your skin type has been updated to: ${displayName}`, {
+        reply_markup: { remove_keyboard: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to update skin type: ${msg}`);
+      await ctx.reply(`Failed to update. Please try again later.`, {
+        reply_markup: { remove_keyboard: true },
+      });
+      this.profileEditSessions.delete(chatId);
+    }
+  }
+
+  private async handleProfileEditAddress(
+    ctx: Context,
+    chatId: string,
+    session: ProfileEditSession,
+    message: Message.TextMessage,
+  ) {
+    const address = message.text?.trim();
+    if (!address || address.length < 5) {
+      await ctx.reply('Please enter a valid address (at least 5 characters).');
+      return;
+    }
+
+    try {
+      await this.customerService.update(session.customerId, { address });
+      this.profileEditSessions.delete(chatId);
+      await ctx.reply(`✅ Your address has been updated to: ${address}`, {
+        reply_markup: { remove_keyboard: true },
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to update address: ${msg}`);
+      await ctx.reply(`Failed to update. Please try again later.`, {
+        reply_markup: { remove_keyboard: true },
+      });
+      this.profileEditSessions.delete(chatId);
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // Admin helpers
   // ─────────────────────────────────────────────
 
@@ -155,22 +457,18 @@ export class TelegramUpdate {
       await ctx.reply(
         `❌ Incorrect password. Try again or send /admin to start over.`,
       );
-      // Keep the session alive so they can retry without re-sending /admin
       return;
     }
 
-    // Authenticated
     this.adminSessions.set(chatId, { step: 'authenticated' });
     this.logger.log(`Admin authenticated for chatId=${chatId}`);
     await this.sendAdminMenu(ctx, `✅ Access granted. Welcome, Admin!`);
   }
 
   private async sendAdminMenu(ctx: Context, headerText: string) {
-    await ctx.reply(
-      `${headerText}\n\n` +
-        `Use the buttons below to manage your store:`,
-      { reply_markup: ADMIN_KEYBOARD },
-    );
+    await ctx.reply(`${headerText}\n\nUse the buttons below to manage your store:`, {
+      reply_markup: ADMIN_KEYBOARD,
+    });
   }
 
   private async handleAdminMenuAction(
@@ -208,14 +506,12 @@ export class TelegramUpdate {
 
       case '🚪 Logout':
         this.adminSessions.delete(chatId);
-        await ctx.reply(
-          `👋 You have been logged out of admin mode.`,
-          { reply_markup: { remove_keyboard: true } },
-        );
+        await ctx.reply(`👋 You have been logged out of admin mode.`, {
+          reply_markup: { remove_keyboard: true },
+        });
         break;
 
       default:
-        // Unrecognised text while in admin mode — remind them of the menu
         await this.sendAdminMenu(ctx, `Use the buttons below:`);
         break;
     }
@@ -232,11 +528,8 @@ export class TelegramUpdate {
     }
 
     const summary = customers
-      .slice(0, 20) // cap at 20 to avoid hitting Telegram's message length limit
-      .map(
-        (c, i) =>
-          `${i + 1}. ${c.fullName} — ${c.phone}`,
-      )
+      .slice(0, 20)
+      .map((c, i) => `${i + 1}. ${c.fullName} — ${c.phone}`)
       .join('\n');
 
     const total = customers.length;
@@ -400,7 +693,8 @@ export class TelegramUpdate {
           `🌿 Skin type: ${session.skinTypeId ? 'Saved' : 'Not specified'}\n` +
           `📍 Address: ${address}\n\n` +
           `Welcome to the Medaf Skin Care family! We will keep you updated on ` +
-          `new arrivals, offers, and skincare tips. 😊`,
+          `new arrivals, offers, and skincare tips. 😊\n\n` +
+          `💡 Tip: Send /profile anytime to view or edit your details.`,
         { reply_markup: { remove_keyboard: true } },
       );
     } catch (err) {

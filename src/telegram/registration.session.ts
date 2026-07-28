@@ -76,3 +76,39 @@ export class AdminSessionStore {
     return this.sessions.get(chatId)?.step === 'authenticated';
   }
 }
+
+// ─── Profile Edit ──────────────────────────────────────────────────────────
+
+export type ProfileEditStep =
+  | 'choosing_field'      // user is choosing what to edit
+  | 'awaiting_name'       // editing full name
+  | 'awaiting_phone'      // editing phone
+  | 'awaiting_skin_type'  // editing skin type
+  | 'awaiting_address';   // editing address
+
+export interface ProfileEditSession {
+  step: ProfileEditStep;
+  customerId: string;       // DB id of the customer being edited
+  field?: 'name' | 'phone' | 'skinType' | 'address';
+  newValue?: string;
+}
+
+export class ProfileEditSessionStore {
+  private readonly sessions = new Map<string, ProfileEditSession>();
+
+  get(chatId: string): ProfileEditSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  set(chatId: string, session: ProfileEditSession): void {
+    this.sessions.set(chatId, session);
+  }
+
+  delete(chatId: string): void {
+    this.sessions.delete(chatId);
+  }
+
+  has(chatId: string): boolean {
+    return this.sessions.has(chatId);
+  }
+}
