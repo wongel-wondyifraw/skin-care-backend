@@ -7,12 +7,15 @@ import { TelegramWebhookService } from './telegram-webhook.service.js';
 import { TelegramUpdate } from './telegram.update.js';
 import { CustomerModule } from '../customer/customer.module.js';
 import { SkinTypeModule } from '../skin-type/skin-type.module.js';
+import { ProductModule } from '../product/product.module.js';
+import { GeminiService } from './gemini.service.js';
 
 @Module({
   imports: [
     ConfigModule,
     CustomerModule,
     SkinTypeModule,
+    ProductModule,
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -37,7 +40,7 @@ import { SkinTypeModule } from '../skin-type/skin-type.module.js';
       },
     }),
   ],
-  providers: [TelegramService, TelegramWebhookService, TelegramUpdate],
+  providers: [TelegramService, TelegramWebhookService, TelegramUpdate, GeminiService],
   controllers: [TelegramController],
   exports: [TelegramService, TelegramWebhookService],
 })

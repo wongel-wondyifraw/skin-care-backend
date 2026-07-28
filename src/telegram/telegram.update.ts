@@ -5,6 +5,8 @@ import { Context } from 'telegraf';
 import { Message } from 'telegraf/types';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { CustomerService } from '../customer/customer.service.js';
+import { ProductService } from '../product/product.service.js';
+import { GeminiService } from './gemini.service.js';
 import {
   AdminSessionStore,
   ProfileEditSession,
@@ -23,6 +25,12 @@ const ADMIN_KEYBOARD = {
   resize_keyboard: true,
 };
 
+// ─── User keyboard with profile button ───────────────────────────────────────
+const USER_KEYBOARD = {
+  keyboard: [[{ text: '👤 Profile' }, { text: '💡 Get Advice' }]],
+  resize_keyboard: true,
+};
+
 @Update()
 export class TelegramUpdate {
   private readonly logger = new Logger(TelegramUpdate.name);
@@ -33,6 +41,8 @@ export class TelegramUpdate {
   constructor(
     private readonly skinTypeService: SkinTypeService,
     private readonly customerService: CustomerService,
+    private readonly productService: ProductService,
+    private readonly geminiService: GeminiService,
     private readonly config: ConfigService,
   ) {}
 
@@ -57,8 +67,8 @@ export class TelegramUpdate {
       await ctx.reply(
         `Welcome back, ${existing.fullName}! 👋\n\n` +
           `You are already registered with Medaf Skin Care. 🌿\n` +
-          `We will keep you updated on new arrivals and offers!\n\n` +
-          `💡 Tip: Send /profile to view or edit your details.`,
+          `We will keep you updated on new arrivals and offers!`,
+        { reply_markup: USER_KEYBOARD },
       );
       return;
     }
@@ -92,7 +102,10 @@ export class TelegramUpdate {
       return;
     }
 
-    // Show current profile data
+    await this.showProfileMenu(ctx, customer);
+  }
+
+  private async showProfileMenu(ctx: Context, customer: any) {
     const skinTypeName = customer.skinType?.name ?? 'Not specified';
 
     await ctx.reply(
@@ -116,10 +129,94 @@ export class TelegramUpdate {
     );
 
     // Start profile edit session
-    this.profileEditSessions.set(chatId, {
+    this.profileEditSessions.set(String(ctx.chat!.id), {
       step: 'choosing_field',
       customerId: customer.id,
     });
+  }
+
+  private async handleGetAdvice(ctx: Context, chatId: string) {
+    const telegramId = ctx.from!.id;
+
+    // Check if user is registered
+    const customer = await this.customerService.findByTelegramId(telegramId);
+    if (!customer) {
+      await ctx.reply(
+        `Please complete your registration first by sending /start.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    await ctx.reply(
+      `⏳ Analyzing your skin type and our product catalog...\n\n` +
+        `This may take a few seconds.`,
+      { reply_markup: USER_KEYBOARD },
+    );
+
+    try {
+      // Fetch all products from the database
+      const allProducts = await this.productService.findAll();
+
+      if (allProducts.length === 0) {
+        await ctx.reply(
+          `Sorry, we don't have any products in our catalog yet. ` +
+            `Please check back later!`,
+          { reply_markup: USER_KEYBOARD },
+        );
+        return;
+      }
+
+      // Get AI-generated advice
+      const skinTypeName = customer.skinType?.name || null;
+      const advice = await this.geminiService.generateSkincareAdvice(
+        skinTypeName,
+        allProducts,
+      );
+
+      // Split the advice into chunks if it's too long (Telegram has a 4096 char limit)
+      const maxLength = 4000;
+      if (advice.length <= maxLength) {
+        await ctx.reply(advice, { reply_markup: USER_KEYBOARD });
+      } else {
+        // Split into chunks
+        const chunks: string[] = [];
+        let remaining = advice;
+        while (remaining.length > 0) {
+          if (remaining.length <= maxLength) {
+            chunks.push(remaining);
+            break;
+          }
+          // Find a good break point (newline near maxLength)
+          let splitAt = remaining.lastIndexOf('\n', maxLength);
+          if (splitAt === -1 || splitAt < maxLength / 2) {
+            splitAt = maxLength;
+          }
+          chunks.push(remaining.substring(0, splitAt));
+          remaining = remaining.substring(splitAt).trim();
+        }
+
+        // Send each chunk
+        for (let i = 0; i < chunks.length; i++) {
+          const isLast = i === chunks.length - 1;
+          await ctx.reply(chunks[i], {
+            reply_markup: isLast ? USER_KEYBOARD : undefined,
+          });
+        }
+      }
+
+      this.logger.log(
+        `Skincare advice delivered to customer ${customer.fullName} (skin type: ${skinTypeName})`,
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to generate advice for chatId=${chatId}: ${msg}`);
+      await ctx.reply(
+        `Sorry, something went wrong while generating your skincare advice. ` +
+          `Please try again later.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -174,6 +271,22 @@ export class TelegramUpdate {
       return;
     }
 
+    // ── "👤 Profile" button press ───────────────────────────────
+    if (text === '👤 Profile') {
+      const telegramId = ctx.from!.id;
+      const customer = await this.customerService.findByTelegramId(telegramId);
+      if (customer) {
+        await this.showProfileMenu(ctx, customer);
+        return;
+      }
+    }
+
+    // ── "💡 Get Advice" button press ─────────────────────────────
+    if (text === '💡 Get Advice') {
+      await this.handleGetAdvice(ctx, chatId);
+      return;
+    }
+
     // ── Registration flow ────────────────────────────────────────
     const session = this.sessions.get(chatId);
     if (!session) return;
@@ -213,7 +326,7 @@ export class TelegramUpdate {
       if (text === '❌ Cancel') {
         this.profileEditSessions.delete(chatId);
         await ctx.reply(`Profile edit cancelled.`, {
-          reply_markup: { remove_keyboard: true },
+          reply_markup: USER_KEYBOARD,
         });
         return;
       }
@@ -331,13 +444,13 @@ export class TelegramUpdate {
       });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your name has been updated to: ${name}`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update name: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -366,13 +479,13 @@ export class TelegramUpdate {
       await this.customerService.update(session.customerId, { phone });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your phone has been updated to: ${phone}`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update phone: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -402,13 +515,13 @@ export class TelegramUpdate {
       this.profileEditSessions.delete(chatId);
       const displayName = match ? match.name : 'Not specified';
       await ctx.reply(`✅ Your skin type has been updated to: ${displayName}`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update skin type: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -430,13 +543,13 @@ export class TelegramUpdate {
       await this.customerService.update(session.customerId, { address });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your address has been updated to: ${address}`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update address: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: { remove_keyboard: true },
+        reply_markup: USER_KEYBOARD,
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -693,9 +806,8 @@ export class TelegramUpdate {
           `🌿 Skin type: ${session.skinTypeId ? 'Saved' : 'Not specified'}\n` +
           `📍 Address: ${address}\n\n` +
           `Welcome to the Medaf Skin Care family! We will keep you updated on ` +
-          `new arrivals, offers, and skincare tips. 😊\n\n` +
-          `💡 Tip: Send /profile anytime to view or edit your details.`,
-        { reply_markup: { remove_keyboard: true } },
+          `new arrivals, offers, and skincare tips. 😊`,
+        { reply_markup: USER_KEYBOARD },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
