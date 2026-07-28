@@ -30,19 +30,20 @@ export class GeminiService {
   ): Promise<string> {
     const skinType = userSkinType || 'Not specified';
 
-    // Build product list with skin type categorization
+    // Build product list with skin type categorization and stock status
     const productList = allProducts
       .map((p) => {
         const category = p.category?.name || 'Uncategorized';
         const suitableFor = p.skinType?.name || 'All skin types';
         const price = p.price ? `${Number(p.price).toFixed(2)} ETB` : 'Price not set';
-        const stock = p.stock > 0 ? 'In stock' : 'Out of stock';
+        const stock = p.stock > 0 ? `In stock (${p.stock} units)` : 'OUT OF STOCK';
 
         return (
           `- ${p.name}\n` +
           `  Category: ${category}\n` +
           `  Suitable for: ${suitableFor}\n` +
-          `  Price: ${price} | ${stock}\n` +
+          `  Price: ${price}\n` +
+          `  Stock: ${stock}\n` +
           `  Description: ${p.description || 'No description'}`
         );
       })
@@ -56,15 +57,24 @@ export class GeminiService {
       `Based on the customer's skin type (${skinType}), please:\n` +
       `1. Recommend a simple daily skincare routine (morning and evening).\n` +
       `2. Choose 3-5 products from our available catalog that are most suitable for this skin type.\n` +
-      `3. Explain WHY each product is recommended and how to use it.\n` +
-      `4. Keep the tone friendly, warm, and professional.\n` +
-      `5. Format the response clearly with sections and emojis for better readability.\n\n` +
+      `3. For each recommended product, explain WHY it's recommended and how to use it.\n` +
+      `4. If a product is OUT OF STOCK, mention it clearly and suggest they check back later or contact us.\n` +
+      `5. Keep the tone friendly, warm, and professional.\n\n` +
+      `IMPORTANT FORMATTING RULES:\n` +
+      `- DO NOT use markdown syntax like *, **, #, ##, or ###\n` +
+      `- Use plain text only with emojis for visual appeal\n` +
+      `- Use line breaks and spacing for readability\n` +
+      `- Use emojis like 🌅 🌙 💧 ✨ 🌿 to make sections clear\n` +
+      `- Keep it conversational and easy to read on mobile\n\n` +
       `If the customer's skin type is "Not specified", provide general skincare tips that work for most skin types and recommend versatile products.`;
 
     try {
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
-      const text = response.text();
+      let text = response.text();
+
+      // Clean up any remaining markdown characters
+      text = this.cleanMarkdown(text);
 
       this.logger.log(
         `Generated skincare advice for skin type: ${skinType} (${allProducts.length} products considered)`,
@@ -76,5 +86,19 @@ export class GeminiService {
       this.logger.error(`Gemini API error: ${msg}`);
       throw new Error('Failed to generate skincare advice. Please try again later.');
     }
+  }
+
+  /**
+   * Remove markdown formatting characters from AI response.
+   */
+  private cleanMarkdown(text: string): string {
+    return text
+      .replace(/\*\*/g, '') // Remove bold **text**
+      .replace(/\*/g, '') // Remove italic *text*
+      .replace(/^#+\s+/gm, '') // Remove headers # Header
+      .replace(/`/g, '') // Remove code backticks
+      .replace(/_{2,}/g, '') // Remove underscores __text__
+      .replace(/~~/g, '') // Remove strikethrough ~~text~~
+      .trim();
   }
 }

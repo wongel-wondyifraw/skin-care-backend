@@ -167,11 +167,49 @@ export class TelegramUpdate {
         return;
       }
 
-      // Get AI-generated advice
-      const skinTypeName = customer.skinType?.name || null;
+      const userSkinType = customer.skinType?.name || null;
+
+      // Filter products: only send products that match user's skin type or are suitable for "All"
+      let filteredProducts = allProducts;
+      if (userSkinType && userSkinType.toLowerCase() !== 'all') {
+        filteredProducts = allProducts.filter((p) => {
+          const productSkinType = (p.skinType?.name || 'All').toLowerCase();
+          return (
+            productSkinType === userSkinType.toLowerCase() ||
+            productSkinType === 'all'
+          );
+        });
+      }
+
+      if (filteredProducts.length === 0) {
+        await ctx.reply(
+          `😔 Unfortunately, we don't have any products specifically for ${userSkinType} skin type in our catalog yet.\n\n` +
+            `Please check back later, or contact our support team for personalized recommendations!`,
+          { reply_markup: USER_KEYBOARD },
+        );
+        return;
+      }
+
+      // Check if all filtered products are out of stock
+      const inStockProducts = filteredProducts.filter((p) => p.stock > 0);
+      if (inStockProducts.length === 0) {
+        const productNames = filteredProducts
+          .slice(0, 5)
+          .map((p) => `• ${p.name}`)
+          .join('\n');
+        await ctx.reply(
+          `We have products for ${userSkinType || 'your'} skin type, but they are currently out of stock:\n\n` +
+            `${productNames}\n\n` +
+            `Please check back soon or contact us to pre-order!`,
+          { reply_markup: USER_KEYBOARD },
+        );
+        return;
+      }
+
+      // Get AI-generated advice using only filtered products
       const advice = await this.geminiService.generateSkincareAdvice(
-        skinTypeName,
-        allProducts,
+        userSkinType,
+        filteredProducts,
       );
 
       // Split the advice into chunks if it's too long (Telegram has a 4096 char limit)
@@ -206,7 +244,8 @@ export class TelegramUpdate {
       }
 
       this.logger.log(
-        `Skincare advice delivered to customer ${customer.fullName} (skin type: ${skinTypeName})`,
+        `Skincare advice delivered to ${customer.fullName} (skin type: ${userSkinType}, ` +
+          `${filteredProducts.length}/${allProducts.length} products matched)`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
