@@ -29,6 +29,8 @@ export class GeminiService {
     allProducts: Product[],
   ): Promise<string> {
     const skinType = userSkinType || 'Not specified';
+    const includeAmharic =
+      (this.config.get<string>('AMHARIC_TRANSLATION') || '').toLowerCase() === 'true';
 
     // Build product list with skin type categorization and stock status
     const productList = allProducts
@@ -49,7 +51,7 @@ export class GeminiService {
       })
       .join('\n\n');
 
-    const prompt =
+    let prompt =
       `You are a professional skincare consultant at Medaf Skin Care.\n\n` +
       `A customer with **${skinType}** skin type is asking for personalized skincare advice.\n\n` +
       `Here are the products currently available in our store:\n\n` +
@@ -65,8 +67,25 @@ export class GeminiService {
       `- Use plain text only with emojis for visual appeal\n` +
       `- Use line breaks and spacing for readability\n` +
       `- Use emojis like 🌅 🌙 💧 ✨ 🌿 to make sections clear\n` +
-      `- Keep it conversational and easy to read on mobile\n\n` +
-      `If the customer's skin type is "Not specified", provide general skincare tips that work for most skin types and recommend versatile products.`;
+      `- Keep it conversational and easy to read on mobile\n\n`;
+
+    if (includeAmharic) {
+      prompt +=
+        `BILINGUAL RESPONSE REQUIRED:\n` +
+        `- Provide the ENTIRE response in BOTH English and Amharic\n` +
+        `- Structure: English section first, then a separator line, then Amharic section\n` +
+        `- DO NOT translate product names (e.g., keep "Hydrating Cleanser" as is)\n` +
+        `- DO NOT translate technical terms (e.g., "moisturizer", "serum", "SPF", "pH")\n` +
+        `- DO NOT translate brand names or category names\n` +
+        `- Translate only the advice, explanations, and routine instructions\n` +
+        `- Use "---" as a separator between English and Amharic sections\n\n` +
+        `Example structure:\n` +
+        `[English advice here]\n\n` +
+        `---\n\n` +
+        `[Amharic translation here with product names kept in English]\n\n`;
+    }
+
+    prompt += `If the customer's skin type is "Not specified", provide general skincare tips that work for most skin types and recommend versatile products.`;
 
     try {
       const result = await this.model.generateContent(prompt);
@@ -77,7 +96,7 @@ export class GeminiService {
       text = this.cleanMarkdown(text);
 
       this.logger.log(
-        `Generated skincare advice for skin type: ${skinType} (${allProducts.length} products considered)`,
+        `Generated skincare advice for skin type: ${skinType} (${allProducts.length} products, bilingual: ${includeAmharic})`,
       );
 
       return text;
