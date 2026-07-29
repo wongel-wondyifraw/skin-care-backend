@@ -9,6 +9,7 @@ export interface CreateCustomerDto {
   phone: string;
   address: string;
   skinTypeId: string | null;
+  telegramUsername?: string | null;
 }
 
 export interface CustomerListQuery {
@@ -65,6 +66,7 @@ export class CustomerService {
         `(
           LOWER(customer.fullName) LIKE :search
           OR CAST(customer.telegramId AS TEXT) LIKE :search
+          OR LOWER(COALESCE(customer.telegramUsername, '')) LIKE :search
           OR LOWER(customer.phone) LIKE :search
           OR LOWER(customer.address) LIKE :search
           OR LOWER(COALESCE(skinType.name, '')) LIKE :search
@@ -89,6 +91,7 @@ export class CustomerService {
       phone: dto.phone,
       address: dto.address,
       skinTypeId: dto.skinTypeId,
+      telegramUsername: dto.telegramUsername?.trim() || null,
     });
     const saved = await this.repo.save(customer);
     this.logger.log(
@@ -100,7 +103,9 @@ export class CustomerService {
   /** Updates an existing customer's profile. */
   async update(
     id: string,
-    data: Partial<Pick<Customer, 'fullName' | 'phone' | 'address' | 'skinTypeId'>>,
+    data: Partial<
+      Pick<Customer, 'fullName' | 'phone' | 'address' | 'skinTypeId' | 'telegramUsername'>
+    >,
   ): Promise<Customer> {
     await this.repo.update(id, data);
     const updated = await this.repo.findOne({

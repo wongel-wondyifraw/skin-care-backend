@@ -22,6 +22,10 @@ export class Customer {
   @Column({ length: 200 })
   fullName: string;
 
+  /** Telegram @username without the leading @ — nullable for older records */
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  telegramUsername: string | null;
+
   @Column({ length: 30 })
   phone: string;
 

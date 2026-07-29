@@ -394,6 +394,9 @@ export class TelegramUpdate {
       case 'awaiting_name':
         await this.handleName(ctx, chatId, session, message);
         break;
+      case 'awaiting_username':
+        await this.handleUsername(ctx, chatId, session, message);
+        break;
       case 'awaiting_phone':
         await this.handlePhone(ctx, chatId, session, message);
         break;
@@ -772,11 +775,65 @@ export class TelegramUpdate {
     }
 
     session.fullName = name;
+    session.step = 'awaiting_username';
+    this.sessions.set(chatId, session);
+
+    const knownUsername = ctx.from?.username?.trim();
+    if (knownUsername) {
+      await ctx.reply(
+        `Great, ${name}! 👍\n\nPlease share your Telegram username.\n` +
+          `We detected @${knownUsername} — tap the button below to use it, or type a different one.`,
+        {
+          reply_markup: {
+            keyboard: [[{ text: `@${knownUsername}` }], [{ text: 'Skip' }]],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+      return;
+    }
+
+    await ctx.reply(
+      `Great, ${name}! 👍\n\nPlease share your Telegram username (e.g. @yourname).\n` +
+        `Type it below, or tap Skip if you don't have one.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: 'Skip' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
+    );
+  }
+
+  private async handleUsername(
+    ctx: Context,
+    chatId: string,
+    session: RegistrationSession,
+    message: Message.TextMessage,
+  ) {
+    const raw = message.text?.trim() ?? '';
+    const lower = raw.toLowerCase();
+
+    if (lower === 'skip' || lower === 'skip for now') {
+      session.telegramUsername = null;
+    } else {
+      const cleaned = raw.replace(/^@/, '').trim();
+      if (!/^[a-zA-Z0-9_]{5,32}$/.test(cleaned)) {
+        await ctx.reply(
+          'Please enter a valid Telegram username (5–32 letters, numbers, or underscores), or tap Skip.',
+        );
+        return;
+      }
+      session.telegramUsername = cleaned;
+    }
+
     session.step = 'awaiting_phone';
     this.sessions.set(chatId, session);
 
     await ctx.reply(
-      `Great, ${name}! 👍\n\nNow please share your phone number | ስልኮን ያጋሩን.\n` +
+      `Thanks! 🙌\n\nNow please share your phone number | ስልኮን ያጋሩን.\n` +
         `You can tap the button below or type it manually.`,
       {
         reply_markup: {
@@ -893,14 +950,20 @@ export class TelegramUpdate {
         phone: session.phone!,
         address: session.address,
         skinTypeId: session.skinTypeId ?? null,
+        telegramUsername: session.telegramUsername ?? ctx.from?.username ?? null,
       });
 
       this.sessions.delete(chatId);
+
+      const usernameLine = session.telegramUsername
+        ? `🔗 Username: @${session.telegramUsername}\n`
+        : '';
 
       await ctx.reply(
         `You are all set, ${session.fullName}! 🎉\n\n` +
           `Here is a summary of your registration:\n\n` +
           `👤 Name: ${session.fullName}\n` +
+          usernameLine +
           `📞 Phone: ${session.phone}\n` +
           `🌿 Skin type: ${session.skinTypeId ? 'Saved' : 'Not specified'}\n` +
           `📍 Address: ${address}\n\n` +

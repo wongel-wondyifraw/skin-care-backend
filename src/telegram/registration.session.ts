@@ -14,6 +14,7 @@
 
 export type RegistrationStep =
   | 'awaiting_name'
+  | 'awaiting_username'
   | 'awaiting_phone'
   | 'awaiting_skin_type'
   | 'awaiting_address'
@@ -22,6 +23,7 @@ export type RegistrationStep =
 export interface RegistrationSession {
   step: RegistrationStep;
   fullName?: string;
+  telegramUsername?: string | null;
   phone?: string;
   skinTypeId?: string | null;
   address?: string;
