@@ -25,4 +25,19 @@ export class TelegramService {
       throw new BadRequestException(`Telegram send failed: ${message}`);
     }
   }
+
+  /** Best-effort notify — logs failures and does not throw. */
+  async sendMessageSafe(chatId: string, text: string): Promise<boolean> {
+    try {
+      await this.bot.telegram.sendMessage(chatId, text);
+      this.logger.log(`Message sent to chatId=${chatId}`);
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Failed to send message to chatId=${chatId}: ${message}`,
+      );
+      return false;
+    }
+  }
 }

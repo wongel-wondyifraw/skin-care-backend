@@ -1,12 +1,15 @@
 import {
   BadRequestException,
+  Inject,
   Injectable,
   NotFoundException,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order, OrderStatus } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
+import { TelegramService } from '../telegram/telegram.service.js';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -29,6 +32,8 @@ export class OrderService {
     private readonly orderRepository: Repository<Order>,
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
+    @Inject(forwardRef(() => TelegramService))
+    private readonly telegramService: TelegramService,
   ) {}
 
   private hydrateQuery() {
@@ -67,6 +72,10 @@ export class OrderService {
     return { items, total, page, pageSize };
   }
 
+  async findRecent(limit = 8): Promise<Order[]> {
+    return this.hydrateQuery().take(Math.min(20, Math.max(1, limit))).getMany();
+  }
+
   async findOne(id: string): Promise<Order> {
     const order = await this.hydrateQuery()
       .where('order.id = :id', { id })
@@ -103,7 +112,7 @@ export class OrderService {
   }
 
   /**
-   * pending → delivered: subtract order.quantity from product stock
+   * pending → delivered: subtract order.quantity from product stock + notify customer
    * pending → cancelled: no stock change
    */
   async updateStatus(id: string, status: OrderStatus): Promise<Order> {
@@ -134,10 +143,55 @@ export class OrderService {
 
     order.status = status;
     await this.orderRepository.save(order);
-    return this.findOne(id);
+    const updated = await this.findOne(id);
+
+    if (status === 'delivered') {
+      await this.notifyCustomerDelivered(updated);
+    }
+
+    return updated;
+  }
+
+  private async notifyCustomerDelivered(order: Order): Promise<void> {
+    const telegramId = order.customer?.telegramId;
+    if (telegramId == null) return;
+
+    const qty = order.quantity ?? 1;
+    const unit = Number(order.cost) || 0;
+    const total = unit * qty;
+    const productName = order.product?.name ?? 'your product';
+    const name = order.customer?.fullName ?? 'there';
+
+    const text =
+      `✅ Delivery confirmed, ${name}!\n\n` +
+      `Your order has been marked as delivered.\n\n` +
+      `🌿 ${productName}\n` +
+      `📦 Qty: ${qty}\n` +
+      `💰 ${total.toFixed(2)} ETB\n\n` +
+      `Thank you for shopping with Medaf Skin Care! 🌿`;
+
+    await this.telegramService.sendMessageSafe(String(telegramId), text);
+  }
+
+  async remove(id: string): Promise<void> {
+    const result = await this.orderRepository.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(`Order with ID ${id} not found`);
+    }
   }
 
   async count(): Promise<number> {
     return this.orderRepository.count();
+  }
+
+  /** Sum of (unit cost × quantity) for delivered orders */
+  async getDeliveredSalesTotal(): Promise<number> {
+    const raw = await this.orderRepository
+      .createQueryBuilder('order')
+      .select('COALESCE(SUM(order.cost * order.quantity), 0)', 'total')
+      .where('order.status = :status', { status: 'delivered' })
+      .getRawOne<{ total: string }>();
+
+    return Number(raw?.total ?? 0);
   }
 }

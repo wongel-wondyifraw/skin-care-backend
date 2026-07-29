@@ -1,4 +1,4 @@
-import { Logger, Module } from '@nestjs/common';
+import { Logger, Module, forwardRef } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TelegrafModule } from 'nestjs-telegraf';
 import { TelegramService } from './telegram.service.js';
@@ -17,7 +17,7 @@ import { GeminiService } from './gemini.service.js';
     CustomerModule,
     SkinTypeModule,
     ProductModule,
-    OrderModule,
+    forwardRef(() => OrderModule),
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
