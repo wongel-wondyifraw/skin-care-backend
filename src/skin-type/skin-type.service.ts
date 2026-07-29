@@ -31,7 +31,11 @@ export class SkinTypeService {
     const existing = await this.repo.findOne({
       where: { name: data.name.trim() },
     });
-    if (existing) throw new ConflictException('Skin type name already exists');
+    if (existing) {
+      throw new ConflictException(
+        `A skin type named "${existing.name}" already exists. Open it to edit instead of creating a duplicate.`,
+      );
+    }
 
     const skin = this.repo.create({
       name: data.name.trim(),

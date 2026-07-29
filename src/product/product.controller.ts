@@ -69,6 +69,14 @@ export class ProductController {
     return this.productService.create(body);
   }
 
+  @Patch(':id/restock')
+  restock(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() body: { quantity: number },
+  ) {
+    return this.productService.restock(id, Number(body.quantity));
+  }
+
   @Patch(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,

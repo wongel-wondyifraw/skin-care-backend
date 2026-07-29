@@ -1,11 +1,13 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { TelegramWebhookService } from './telegram/telegram-webhook.service.js';
+import { GlobalHttpExceptionFilter } from './common/http-exception.filter.js';
 import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  app.useGlobalFilters(new GlobalHttpExceptionFilter());
   app.use(cookieParser());
 
   app.enableCors({

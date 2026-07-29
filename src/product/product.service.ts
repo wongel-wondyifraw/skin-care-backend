@@ -1,6 +1,11 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { ILike, Repository } from 'typeorm';
 import { Product } from './product.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
 
@@ -106,6 +111,19 @@ export class ProductService {
   }
 
   async create(data: Partial<Product>): Promise<Product> {
+    const name = data.name?.trim();
+    if (name) {
+      const existing = await this.productRepository.findOne({
+        where: { name: ILike(name) },
+      });
+      if (existing) {
+        throw new ConflictException(
+          `A product named "${existing.name}" already exists. Use Restock to add inventory instead of creating a duplicate.`,
+        );
+      }
+      data.name = name;
+    }
+
     if (!data.skinTypeId) {
       const allSkin = await this.findOrCreateAllSkinType();
       data.skinTypeId = allSkin.id;
@@ -113,6 +131,16 @@ export class ProductService {
     const product = this.productRepository.create(data);
     const saved = await this.productRepository.save(product);
     return this.findHydratedById(saved.id);
+  }
+
+  async restock(id: string, quantity: number): Promise<Product> {
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      throw new BadRequestException('Restock quantity must be a positive number.');
+    }
+    const product = await this.findHydratedById(id);
+    product.stock = (product.stock ?? 0) + Math.floor(quantity);
+    await this.productRepository.save(product);
+    return this.findHydratedById(id);
   }
 
   async update(id: string, data: Partial<Product>): Promise<Product> {

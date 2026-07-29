@@ -31,7 +31,11 @@ export class CategoryService {
     const existing = await this.repo.findOne({
       where: { name: data.name.trim() },
     });
-    if (existing) throw new ConflictException('Category name already exists');
+    if (existing) {
+      throw new ConflictException(
+        `A category named "${existing.name}" already exists. Open it to edit instead of creating a duplicate.`,
+      );
+    }
     const cat = this.repo.create({
       name: data.name.trim(),
       description: data.description?.trim() ?? null,
