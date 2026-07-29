@@ -72,7 +72,13 @@ export class AdminUserService {
     const user = await this.findById(id);
     if (!user) throw new NotFoundException('Admin user not found');
 
-    if (data.name) user.name = data.name.trim();
+    if (data.name !== undefined) {
+      const trimmed = data.name.trim();
+      if (!trimmed) {
+        throw new BadRequestException('Name is required');
+      }
+      user.name = trimmed;
+    }
 
     if (data.newPassword) {
       if (!data.currentPassword) {
