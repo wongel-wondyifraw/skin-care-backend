@@ -1,14 +1,17 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
+import { Action, Command, Ctx, On, Start, Update } from 'nestjs-telegraf';
 import { Context } from 'telegraf';
 import { Message } from 'telegraf/types';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { CustomerService } from '../customer/customer.service.js';
 import { ProductService } from '../product/product.service.js';
+import { OrderService } from '../order/order.service.js';
 import { GeminiService } from './gemini.service.js';
 import {
   AdminSessionStore,
+  OrderSession,
+  OrderSessionStore,
   ProfileEditSession,
   ProfileEditSessionStore,
   RegistrationSession,
@@ -38,11 +41,13 @@ export class TelegramUpdate {
   private readonly sessions = new RegistrationSessionStore();
   private readonly adminSessions = new AdminSessionStore();
   private readonly profileEditSessions = new ProfileEditSessionStore();
+  private readonly orderSessions = new OrderSessionStore();
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
     private readonly customerService: CustomerService,
     private readonly productService: ProductService,
+    private readonly orderService: OrderService,
     private readonly geminiService: GeminiService,
     private readonly config: ConfigService,
   ) {}
@@ -342,6 +347,70 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
+  // Inline: Order Now on product cards
+  // ─────────────────────────────────────────────
+  @Action(/^order_(.+)$/)
+  async onOrderCallback(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const productId = data.replace(/^order_/, '');
+
+    await ctx.answerCbQuery();
+
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.reply(
+        `Please register first with /start before placing an order.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    let product;
+    try {
+      product = await this.productService.findOne(productId);
+    } catch {
+      await ctx.reply(`Sorry, that product is no longer available.`, {
+        reply_markup: USER_KEYBOARD,
+      });
+      return;
+    }
+
+    if (product.stock <= 0) {
+      await ctx.reply(
+        `🔔 Thanks! We'll notify you when "${product.name}" is back in stock.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    this.profileEditSessions.delete(chatId);
+    this.orderSessions.set(chatId, {
+      step: 'awaiting_delivery_address',
+      productId: product.id,
+      customerId: customer.id,
+      cost: Number(product.price) || 0,
+      productName: product.name,
+    });
+
+    await ctx.reply(
+      `🛒 Ordering: ${product.name}\n` +
+        `💰 Cost: ${Number(product.price).toFixed(2)} ETB\n\n` +
+        `Optionally enter a delivery address, or tap Skip to place the order without one.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: 'Skip' }], [{ text: '❌ Cancel order' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
+    );
+  }
+
+  // ─────────────────────────────────────────────
   // All text / contact messages
   // ─────────────────────────────────────────────
   @On('message')
@@ -354,6 +423,13 @@ export class TelegramUpdate {
     const adminSession = this.adminSessions.get(chatId);
     if (adminSession?.step === 'awaiting_password') {
       await this.handleAdminPassword(ctx, chatId, text);
+      return;
+    }
+
+    // ── Order delivery address flow ──────────────────────────────
+    const orderSession = this.orderSessions.get(chatId);
+    if (orderSession) {
+      await this.handleOrderAddressFlow(ctx, chatId, orderSession, text);
       return;
     }
 
@@ -408,6 +484,54 @@ export class TelegramUpdate {
         break;
       default:
         break;
+    }
+  }
+
+  private async handleOrderAddressFlow(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+    text: string,
+  ) {
+    if (text === '❌ Cancel order') {
+      this.orderSessions.delete(chatId);
+      await ctx.reply(`Order cancelled.`, { reply_markup: USER_KEYBOARD });
+      return;
+    }
+
+    const skip = !text || text.toLowerCase() === 'skip';
+    const deliveryAddress = skip ? null : text;
+
+    try {
+      await this.orderService.create({
+        customerId: session.customerId,
+        productId: session.productId,
+        cost: session.cost,
+        deliveryAddress,
+      });
+      this.orderSessions.delete(chatId);
+
+      const addressLine = deliveryAddress
+        ? `📍 Delivery: ${deliveryAddress}\n`
+        : `📍 Delivery: not provided\n`;
+
+      await ctx.reply(
+        `✅ Order placed!\n\n` +
+          `🌿 ${session.productName}\n` +
+          `💰 ${session.cost.toFixed(2)} ETB\n` +
+          addressLine +
+          `⏳ Status: pending\n\n` +
+          `We'll contact you soon to confirm delivery.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+    } catch (err) {
+      this.orderSessions.delete(chatId);
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to create order: ${msg}`);
+      await ctx.reply(
+        `Sorry, we couldn't place your order. Please try again.`,
+        { reply_markup: USER_KEYBOARD },
+      );
     }
   }
 
@@ -706,7 +830,8 @@ export class TelegramUpdate {
 
       case '🛒 Orders':
         await ctx.reply(
-          `🛒 Orders\n\nOrder management is coming soon. Stay tuned!`,
+          `🛒 Orders\n\nView and manage orders in the web admin panel:\n` +
+            `https://skin-care-frontend-ecru.vercel.app/admin/orders`,
           { reply_markup: ADMIN_KEYBOARD },
         );
         break;

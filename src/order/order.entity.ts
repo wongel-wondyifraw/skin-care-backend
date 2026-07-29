@@ -1,0 +1,50 @@
+import {
+  Entity,
+  PrimaryGeneratedColumn,
+  Column,
+  CreateDateColumn,
+  ManyToOne,
+  JoinColumn,
+  Index,
+} from 'typeorm';
+import { Customer } from '../customer/customer.entity.js';
+import { Product } from '../product/product.entity.js';
+
+export type OrderStatus = 'pending' | 'delivered';
+
+@Entity('orders')
+export class Order {
+  @PrimaryGeneratedColumn('uuid')
+  id: string;
+
+  @Index()
+  @Column()
+  customerId: string;
+
+  @ManyToOne(() => Customer, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'customerId' })
+  customer: Customer;
+
+  @Index()
+  @Column()
+  productId: string;
+
+  @ManyToOne(() => Product, { onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'productId' })
+  product: Product;
+
+  /** Price at the time of order */
+  @Column({ type: 'decimal', precision: 10, scale: 2 })
+  cost: number;
+
+  @Column({ type: 'text', nullable: true })
+  deliveryAddress: string | null;
+
+  @Index()
+  @Column({ type: 'varchar', length: 20, default: 'pending' })
+  status: OrderStatus;
+
+  @Index()
+  @CreateDateColumn()
+  createdAt: Date;
+}

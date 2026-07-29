@@ -1,4 +1,14 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  ParseUUIDPipe,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { CustomerService } from './customer.service.js';
 
@@ -27,5 +37,10 @@ export class CustomerController {
 
     return this.customerService.findAll();
   }
-}
 
+  @Delete(':id')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.customerService.remove(id);
+  }
+}

@@ -114,3 +114,35 @@ export class ProfileEditSessionStore {
     return this.sessions.has(chatId);
   }
 }
+
+// ─── Order (optional delivery address) ─────────────────────────────────────
+
+export type OrderSessionStep = 'awaiting_delivery_address';
+
+export interface OrderSession {
+  step: OrderSessionStep;
+  productId: string;
+  customerId: string;
+  cost: number;
+  productName: string;
+}
+
+export class OrderSessionStore {
+  private readonly sessions = new Map<string, OrderSession>();
+
+  get(chatId: string): OrderSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  set(chatId: string, session: OrderSession): void {
+    this.sessions.set(chatId, session);
+  }
+
+  delete(chatId: string): void {
+    this.sessions.delete(chatId);
+  }
+
+  has(chatId: string): boolean {
+    return this.sessions.has(chatId);
+  }
+}

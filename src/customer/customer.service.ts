@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Customer } from './customer.entity.js';
@@ -115,5 +115,13 @@ export class CustomerService {
     if (!updated) throw new Error('Customer not found after update');
     this.logger.log(`Customer profile updated: ${updated.fullName} (id=${id})`);
     return updated;
+  }
+
+  async remove(id: string): Promise<void> {
+    const result = await this.repo.delete(id);
+    if (result.affected === 0) {
+      throw new NotFoundException(`Customer ${id} not found`);
+    }
+    this.logger.log(`Customer deleted: id=${id}`);
   }
 }
