@@ -21,6 +21,7 @@ import { CustomerModule } from './customer/customer.module.js';
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
+    TypeOrmModule.forFeature([AdminUser, SkinType, Category, Product, Customer]),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],

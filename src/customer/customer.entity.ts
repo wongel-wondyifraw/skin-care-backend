@@ -6,6 +6,7 @@ import {
   JoinColumn,
   CreateDateColumn,
   UpdateDateColumn,
+  Index,
 } from 'typeorm';
 import { SkinType } from '../skin-type/skin-type.entity.js';
 
@@ -32,9 +33,11 @@ export class Customer {
   @JoinColumn({ name: 'skinTypeId' })
   skinType: SkinType | null;
 
+  @Index()
   @Column({ nullable: true })
   skinTypeId: string | null;
 
+  @Index()
   @CreateDateColumn()
   createdAt: Date;
 

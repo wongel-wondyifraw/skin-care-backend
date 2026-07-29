@@ -4,6 +4,22 @@ import { Repository } from 'typeorm';
 import { Product } from './product.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
 
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+export interface ProductListQuery {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+  categoryId?: string;
+  skinTypeId?: string;
+  stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
+}
+
 @Injectable()
 export class ProductService {
   constructor(
@@ -18,7 +34,50 @@ export class ProductService {
     });
   }
 
-  async findOne(id: string): Promise<Product> {
+  async findPage(query: ProductListQuery): Promise<PaginatedResult<Product>> {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.min(50, Math.max(1, query.pageSize ?? 12));
+
+    const qb = this.productRepository
+      .createQueryBuilder('product')
+      .leftJoinAndSelect('product.category', 'category')
+      .leftJoinAndSelect('product.skinType', 'skinType')
+      .orderBy('product.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    const search = query.search?.trim();
+    if (search) {
+      qb.andWhere('LOWER(product.name) LIKE :search', {
+        search: `%${search.toLowerCase()}%`,
+      });
+    }
+
+    if (query.categoryId) {
+      qb.andWhere('product.categoryId = :categoryId', {
+        categoryId: query.categoryId,
+      });
+    }
+
+    if (query.skinTypeId) {
+      qb.andWhere('product.skinTypeId = :skinTypeId', {
+        skinTypeId: query.skinTypeId,
+      });
+    }
+
+    if (query.stock === 'out_of_stock') {
+      qb.andWhere('product.stock = 0');
+    } else if (query.stock === 'low_stock') {
+      qb.andWhere('product.stock > 0 AND product.stock < 10');
+    } else if (query.stock === 'in_stock') {
+      qb.andWhere('product.stock > 0');
+    }
+
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, page, pageSize };
+  }
+
+  private async findHydratedById(id: string): Promise<Product> {
     const product = await this.productRepository.findOne({
       where: { id },
       relations: { category: true, skinType: true },
@@ -27,6 +86,10 @@ export class ProductService {
       throw new NotFoundException(`Product with ID ${id} not found`);
     }
     return product;
+  }
+
+  async findOne(id: string): Promise<Product> {
+    return this.findHydratedById(id);
   }
 
   private async findOrCreateAllSkinType(): Promise<SkinType> {
@@ -49,7 +112,7 @@ export class ProductService {
     }
     const product = this.productRepository.create(data);
     const saved = await this.productRepository.save(product);
-    return this.findOne(saved.id);
+    return this.findHydratedById(saved.id);
   }
 
   async update(id: string, data: Partial<Product>): Promise<Product> {
@@ -60,10 +123,10 @@ export class ProductService {
       const allSkin = await this.findOrCreateAllSkinType();
       data.skinTypeId = allSkin.id;
     }
-    const product = await this.findOne(id);
+    const product = await this.findHydratedById(id);
     Object.assign(product, data);
     await this.productRepository.save(product);
-    return this.findOne(id);
+    return this.findHydratedById(id);
   }
 
   async remove(id: string): Promise<void> {

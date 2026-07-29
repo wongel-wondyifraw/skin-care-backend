@@ -7,6 +7,7 @@ import {
   Param,
   Delete,
   ParseUUIDPipe,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -18,7 +19,32 @@ export class ProductController {
   constructor(private readonly productService: ProductService) {}
 
   @Get()
-  findAll() {
+  findAll(
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('categoryId') categoryId?: string,
+    @Query('skinTypeId') skinTypeId?: string,
+    @Query('stock') stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock',
+  ) {
+    if (
+      page !== undefined ||
+      pageSize !== undefined ||
+      search !== undefined ||
+      categoryId !== undefined ||
+      skinTypeId !== undefined ||
+      stock !== undefined
+    ) {
+      return this.productService.findPage({
+        page: page ? Number(page) : undefined,
+        pageSize: pageSize ? Number(pageSize) : undefined,
+        search,
+        categoryId,
+        skinTypeId,
+        stock,
+      });
+    }
+
     return this.productService.findAll();
   }
 

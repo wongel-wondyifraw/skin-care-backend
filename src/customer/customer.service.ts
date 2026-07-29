@@ -11,6 +11,19 @@ export interface CreateCustomerDto {
   skinTypeId: string | null;
 }
 
+export interface CustomerListQuery {
+  page?: number;
+  pageSize?: number;
+  search?: string;
+}
+
+export interface PaginatedCustomers {
+  items: Customer[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
 @Injectable()
 export class CustomerService {
   private readonly logger = new Logger(CustomerService.name);
@@ -34,6 +47,38 @@ export class CustomerService {
       order: { createdAt: 'DESC' },
       relations: { skinType: true },
     });
+  }
+
+  findPage(query: CustomerListQuery): Promise<PaginatedCustomers> {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.min(50, Math.max(1, query.pageSize ?? 12));
+    const qb = this.repo
+      .createQueryBuilder('customer')
+      .leftJoinAndSelect('customer.skinType', 'skinType')
+      .orderBy('customer.createdAt', 'DESC')
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    const search = query.search?.trim();
+    if (search) {
+      qb.andWhere(
+        `(
+          LOWER(customer.fullName) LIKE :search
+          OR CAST(customer.telegramId AS TEXT) LIKE :search
+          OR LOWER(customer.phone) LIKE :search
+          OR LOWER(customer.address) LIKE :search
+          OR LOWER(COALESCE(skinType.name, '')) LIKE :search
+        )`,
+        { search: `%${search.toLowerCase()}%` },
+      );
+    }
+
+    return qb.getManyAndCount().then(([items, total]) => ({
+      items,
+      total,
+      page,
+      pageSize,
+    }));
   }
 
   /** Persists a brand-new customer coming from the registration flow. */

@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  Index,
 } from 'typeorm';
 import { Category } from '../category/category.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
@@ -26,22 +27,22 @@ export class Product {
   @Column({ type: 'varchar', nullable: true })
   assetId: string;
 
+  @Index()
   @Column({ nullable: true })
   categoryId: string;
 
   @ManyToOne(() => Category, {
-    eager: true,
     nullable: true,
     onDelete: 'SET NULL',
   })
   @JoinColumn({ name: 'categoryId' })
   category: Category;
 
+  @Index()
   @Column({ nullable: true })
   skinTypeId: string;
 
   @ManyToOne(() => SkinType, {
-    eager: true,
     nullable: true,
     onDelete: 'SET NULL',
   })
@@ -54,6 +55,7 @@ export class Product {
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   price: number;
 
+  @Index()
   @CreateDateColumn()
   createdAt: Date;
 }
