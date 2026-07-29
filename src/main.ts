@@ -1,12 +1,17 @@
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module.js';
 import { TelegramWebhookService } from './telegram/telegram-webhook.service.js';
+import cookieParser from 'cookie-parser';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  // Allow all origins — this is an admin-only internal API
-  app.enableCors();
+  app.use(cookieParser());
+
+  app.enableCors({
+    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    credentials: true,
+  });
 
   // Global prefix so all routes live under /api
   app.setGlobalPrefix('api');

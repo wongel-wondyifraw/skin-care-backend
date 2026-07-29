@@ -7,9 +7,12 @@ import {
   Param,
   Delete,
   ParseUUIDPipe,
+  UseGuards,
 } from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ProductService } from './product.service';
 
+@UseGuards(JwtAuthGuard)
 @Controller('products')
 export class ProductController {
   constructor(private readonly productService: ProductService) {}
