@@ -203,10 +203,11 @@ export class TelegramUpdate {
       }
 
       // ── Step 1: Get AI advice text ──────────────────────────────
-      const advice = await this.geminiService.generateSkincareAdvice(
-        userSkinType,
-        filteredProducts,
-      );
+      const { text: advice, mentionedProducts: recommendedProducts } =
+        await this.geminiService.generateSkincareAdvice(
+          userSkinType,
+          filteredProducts,
+        );
 
       // Send advice in chunks (Telegram 4096 char limit)
       const maxLength = 4000;
@@ -231,11 +232,7 @@ export class TelegramUpdate {
       }
 
       // ── Step 2: Extract which products were recommended ─────────
-      const recommendedProducts =
-        await this.geminiService.extractRecommendedProductNames(
-          advice,
-          filteredProducts,
-        );
+      // Already done inside generateSkincareAdvice — no second API call needed.
 
       if (recommendedProducts.length === 0) {
         await ctx.reply(

@@ -11,17 +11,13 @@ export class GeminiService {
 
   constructor(private readonly config: ConfigService) {
     const apiKey = this.config.get<string>('GEMINI_API_KEY');
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is missing from .env');
-    }
+    if (!apiKey) throw new Error('GEMINI_API_KEY is missing from .env');
 
     const modelName =
       this.config.get<string>('GEMINI_MODEL') || 'gemini-1.5-flash';
 
     this.genAI = new GoogleGenerativeAI(apiKey);
 
-    // Low temperature (0.1) suppresses hallucinated products.
-    // System instruction sets closed-world context at the model level.
     this.model = this.genAI.getGenerativeModel({
       model: modelName,
       systemInstruction:
@@ -29,39 +25,34 @@ export class GeminiService {
         'You operate in a CLOSED-WORLD environment. You are strictly forbidden ' +
         'from inventing, suggesting, or mentioning any product, brand, or routine ' +
         'step that is not explicitly provided in the user inventory context.',
-      generationConfig: {
-        temperature: 0.1,
-        topP: 0.8,
-      },
+      generationConfig: { temperature: 0.1, topP: 0.8 },
     });
 
     this.logger.log(`Gemini service initialized with model: ${modelName}`);
   }
 
   /**
-   * Generate personalized skincare advice based on user's skin type
-   * and available products from the store.
+   * Generate personalized skincare advice and return both the text
+   * and the products that were actually mentioned in the response.
    */
   async generateSkincareAdvice(
     userSkinType: string | null,
     allProducts: Product[],
-  ): Promise<string> {
+  ): Promise<{ text: string; mentionedProducts: Product[] }> {
     const skinType = userSkinType || 'Not specified';
     const includeAmharic =
       (this.config.get<string>('AMHARIC_TRANSLATION') || '').toLowerCase() ===
       'true';
 
-    // Handle edge case: empty product catalog upfront
     if (!allProducts || allProducts.length === 0) {
-      return includeAmharic
-        ? 'We currently do not have products in stock matching your request. Please check back later!\n\n---\n\nበአሁኑ ሰዓት ለጠየቁት ዓይነት የሚሆኑ ምርቶች በክምችት ውስጥ የሉም። እባክዎን በኋላ መልሰው ይፈትሹ!'
-        : 'We currently do not have products in stock matching your request. Please check back later!';
+      const text = includeAmharic
+        ? 'We currently do not have products matching your request.\n\n---\n\nበአሁኑ ሰዓት ለጠየቁት ዓይነት ምርቶች የሉም።'
+        : 'We currently do not have products matching your request. Please check back later!';
+      return { text, mentionedProducts: [] };
     }
 
-    // Build precise list of product names for explicit context anchoring
     const exactProductNames = allProducts.map((p) => `"${p.name}"`).join(', ');
 
-    // Build detailed product list with stock status
     const productList = allProducts
       .map((p) => {
         const category = p.category?.name || 'Uncategorized';
@@ -93,11 +84,9 @@ export class GeminiService {
       `${productList}\n\n` +
       `STRICT COMPLIANCE RULES:\n` +
       `1. ABSOLUTE ZERO HALLUCINATION RULE: Recommend ONLY products from the exact list above. ` +
-      `Do NOT mention, suggest, or imply ANY other product, even generic ones ` +
-      `(e.g., do not suggest a "moisturizer" or "sunscreen" unless it is explicitly present in the inventory list above).\n` +
-      `2. If an essential skincare step (like cleansing or sun protection) has NO matching product ` +
-      `in the list above, DO NOT suggest external items. Simply state that Medaf Skin Care does not ` +
-      `currently have that product in stock.\n` +
+      `Do NOT mention, suggest, or imply ANY other product, even generic ones.\n` +
+      `2. If an essential skincare step has NO matching product in the list above, ` +
+      `DO NOT suggest external items. Simply state that Medaf Skin Care does not currently have it.\n` +
       `3. For each product you recommend, use its EXACT listed name.\n` +
       `4. If a listed product is OUT OF STOCK, state its out-of-stock status clearly.\n` +
       `5. Base recommendations on suitability for skin type: ${skinType}.\n\n` +
@@ -117,12 +106,7 @@ export class GeminiService {
         `- Structure: English section first, then "---" on its own line, then Amharic section\n` +
         `- DO NOT translate product names (keep exact English product names as-is)\n` +
         `- DO NOT translate technical terms (e.g., "moisturizer", "serum", "SPF", "pH")\n` +
-        `- DO NOT translate brand names or category names\n` +
-        `- Translate only advice, explanations, and usage instructions into Amharic\n\n` +
-        `Example structure:\n` +
-        `[English advice here]\n\n` +
-        `---\n\n` +
-        `[Amharic translation here keeping English product names]\n\n`;
+        `- Translate only advice, explanations, and usage instructions into Amharic\n\n`;
     }
 
     if (userSkinType === null) {
@@ -136,18 +120,23 @@ export class GeminiService {
       const response = await result.response;
       let text = response.text();
 
-      // Strip any remaining markdown characters
       text = this.cleanMarkdown(text);
-
-      // Validate grounding — ensure the response references at least one real product
       text = this.validateAndSanitizeOutput(text, allProducts);
 
-      this.logger.log(
-        `Generated skincare advice for skin type: ${skinType} ` +
-          `(${allProducts.length} products, bilingual: ${includeAmharic})`,
+      // ── Match products by scanning the advice text directly ──────
+      // No second API call needed — just check which DB product names
+      // appear verbatim in the response text.
+      const mentionedProducts = allProducts.filter((p) =>
+        text.toLowerCase().includes(p.name.toLowerCase()),
       );
 
-      return text;
+      this.logger.log(
+        `Advice generated for skin type: ${skinType} | ` +
+          `${allProducts.length} products considered | ` +
+          `${mentionedProducts.length} mentioned in response`,
+      );
+
+      return { text, mentionedProducts };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Gemini API error: ${msg}`);
@@ -158,60 +147,14 @@ export class GeminiService {
   }
 
   /**
-   * Ask Gemini which products it recommended in the advice text.
-   * Returns a list of exact product names matched against the DB inventory.
-   * This is a lightweight second call so we get structured data to build photo cards.
-   */
-  async extractRecommendedProductNames(
-    adviceText: string,
-    allProducts: Product[],
-  ): Promise<Product[]> {
-    const exactProductNames = allProducts.map((p) => `"${p.name}"`).join(', ');
-
-    const prompt =
-      `From the following skincare advice text, extract the names of products that were recommended.\n\n` +
-      `ADVICE TEXT:\n${adviceText}\n\n` +
-      `ALLOWED PRODUCT NAMES (only choose from this list):\n[ ${exactProductNames} ]\n\n` +
-      `Return ONLY a comma-separated list of the exact product names that appear in the advice text above.\n` +
-      `Do NOT include any explanation, numbering, or extra text — just the names separated by commas.\n` +
-      `Example output: Product A, Product B, Product C`;
-
-    try {
-      const result = await this.model.generateContent(prompt);
-      const raw = (await result.response).text().trim();
-
-      // Parse the comma-separated names and match against DB records (case-insensitive)
-      const extractedNames = raw
-        .split(',')
-        .map((n) => n.trim().replace(/^"|"$/g, ''));
-
-      const matched = allProducts.filter((p) =>
-        extractedNames.some(
-          (name) => name.toLowerCase() === p.name.toLowerCase(),
-        ),
-      );
-
-      this.logger.log(
-        `Extracted ${matched.length} recommended products from advice text`,
-      );
-
-      return matched;
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to extract product names: ${msg}`);
-      // Fallback: return all filtered products so user still sees cards
-      return allProducts;
-    }
-  }
-   * If the AI response doesn't mention any product from the database,
-   * it almost certainly hallucinated — return a safe fallback.
+   * Post-processing grounding check.
    */
   private validateAndSanitizeOutput(
     response: string,
     validProducts: Product[],
   ): string {
-    const mentionsValidProduct = validProducts.some((product) =>
-      response.toLowerCase().includes(product.name.toLowerCase()),
+    const mentionsValidProduct = validProducts.some((p) =>
+      response.toLowerCase().includes(p.name.toLowerCase()),
     );
 
     if (!mentionsValidProduct) {
@@ -221,7 +164,7 @@ export class GeminiService {
       return (
         `✨ Welcome to Medaf Skin Care! ✨\n\n` +
         `We are currently updating our active inventory for your skin profile. ` +
-        `Please explore our store catalog directly or check back shortly for updated recommendations!`
+        `Please explore our store catalog directly or check back shortly!`
       );
     }
 
@@ -233,12 +176,12 @@ export class GeminiService {
    */
   private cleanMarkdown(text: string): string {
     return text
-      .replace(/\*\*/g, '')       // bold **text**
-      .replace(/\*/g, '')         // italic *text*
-      .replace(/^#+\s+/gm, '')    // headers # Header
-      .replace(/`/g, '')          // code backticks
-      .replace(/_{2,}/g, '')      // underscores __text__
-      .replace(/~~/g, '')         // strikethrough ~~text~~
+      .replace(/\*\*/g, '')
+      .replace(/\*/g, '')
+      .replace(/^#+\s+/gm, '')
+      .replace(/`/g, '')
+      .replace(/_{2,}/g, '')
+      .replace(/~~/g, '')
       .trim();
   }
 }
