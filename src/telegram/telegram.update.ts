@@ -138,7 +138,6 @@ export class TelegramUpdate {
   private async handleGetAdvice(ctx: Context, chatId: string) {
     const telegramId = ctx.from!.id;
 
-    // Check if user is registered
     const customer = await this.customerService.findByTelegramId(telegramId);
     if (!customer) {
       await ctx.reply(
@@ -149,19 +148,16 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      `⏳ Analyzing your skin type and our product catalog...\n\n` +
-        `This may take a few seconds.`,
+      `⏳ Analyzing your skin type and our product catalog...\n\nThis may take a few seconds.`,
       { reply_markup: USER_KEYBOARD },
     );
 
     try {
-      // Fetch all products from the database
       const allProducts = await this.productService.findAll();
 
       if (allProducts.length === 0) {
         await ctx.reply(
-          `Sorry, we don't have any products in our catalog yet. ` +
-            `Please check back later!`,
+          `Sorry, we don't have any products in our catalog yet. Please check back later!`,
           { reply_markup: USER_KEYBOARD },
         );
         return;
@@ -169,7 +165,7 @@ export class TelegramUpdate {
 
       const userSkinType = customer.skinType?.name || null;
 
-      // Filter products: only send products that match user's skin type or are suitable for "All"
+      // Filter: only products matching user's skin type or "All"
       let filteredProducts = allProducts;
       if (userSkinType && userSkinType.toLowerCase() !== 'all') {
         filteredProducts = allProducts.filter((p) => {
@@ -190,7 +186,7 @@ export class TelegramUpdate {
         return;
       }
 
-      // Check if all filtered products are out of stock
+      // All filtered products are out of stock
       const inStockProducts = filteredProducts.filter((p) => p.stock > 0);
       if (inStockProducts.length === 0) {
         const productNames = filteredProducts
@@ -206,18 +202,17 @@ export class TelegramUpdate {
         return;
       }
 
-      // Get AI-generated advice using only filtered products
+      // ── Step 1: Get AI advice text ──────────────────────────────
       const advice = await this.geminiService.generateSkincareAdvice(
         userSkinType,
         filteredProducts,
       );
 
-      // Split the advice into chunks if it's too long (Telegram has a 4096 char limit)
+      // Send advice in chunks (Telegram 4096 char limit)
       const maxLength = 4000;
       if (advice.length <= maxLength) {
-        await ctx.reply(advice, { reply_markup: USER_KEYBOARD });
+        await ctx.reply(advice);
       } else {
-        // Split into chunks
         const chunks: string[] = [];
         let remaining = advice;
         while (remaining.length > 0) {
@@ -225,34 +220,101 @@ export class TelegramUpdate {
             chunks.push(remaining);
             break;
           }
-          // Find a good break point (newline near maxLength)
           let splitAt = remaining.lastIndexOf('\n', maxLength);
-          if (splitAt === -1 || splitAt < maxLength / 2) {
-            splitAt = maxLength;
-          }
+          if (splitAt === -1 || splitAt < maxLength / 2) splitAt = maxLength;
           chunks.push(remaining.substring(0, splitAt));
           remaining = remaining.substring(splitAt).trim();
         }
-
-        // Send each chunk
-        for (let i = 0; i < chunks.length; i++) {
-          const isLast = i === chunks.length - 1;
-          await ctx.reply(chunks[i], {
-            reply_markup: isLast ? USER_KEYBOARD : undefined,
-          });
+        for (const chunk of chunks) {
+          await ctx.reply(chunk);
         }
       }
 
+      // ── Step 2: Extract which products were recommended ─────────
+      const recommendedProducts =
+        await this.geminiService.extractRecommendedProductNames(
+          advice,
+          filteredProducts,
+        );
+
+      if (recommendedProducts.length === 0) {
+        await ctx.reply(
+          `No specific products were matched. Browse our full catalog for more options!`,
+          { reply_markup: USER_KEYBOARD },
+        );
+        return;
+      }
+
+      // ── Step 3: Send a photo card for each recommended product ──
+      await ctx.reply(
+        `🛍️ Here are the products recommended for you:`,
+      );
+
+      for (const product of recommendedProducts) {
+        const price =
+          product.price != null
+            ? `${Number(product.price).toFixed(2)} ETB`
+            : 'Price not set';
+        const stockLine =
+          product.stock > 0
+            ? `✅ In stock (${product.stock} units)`
+            : `❌ Out of stock`;
+        const category = product.category?.name || 'Uncategorized';
+        const skinTypeName = product.skinType?.name || 'All skin types';
+        const description = product.description?.trim() || 'No description available.';
+
+        const caption =
+          `🌿 ${product.name}\n\n` +
+          `📂 Category: ${category}\n` +
+          `💧 Suitable for: ${skinTypeName} skin\n` +
+          `💰 Price: ${price}\n` +
+          `${stockLine}\n\n` +
+          `📝 ${description}`;
+
+        const inlineKeyboard = {
+          inline_keyboard: [
+            [
+              {
+                text: product.stock > 0 ? '🛒 Order Now' : '🔔 Notify Me',
+                callback_data: `order_${product.id}`,
+              },
+            ],
+          ],
+        };
+
+        try {
+          // Send photo using the Cloudinary URL stored in product.image
+          await ctx.replyWithPhoto(
+            { url: product.image },
+            {
+              caption,
+              reply_markup: inlineKeyboard,
+            },
+          );
+        } catch {
+          // Image URL might be broken — fall back to a text card
+          this.logger.warn(
+            `Failed to send photo for product ${product.name}, sending text card instead`,
+          );
+          await ctx.reply(caption, { reply_markup: inlineKeyboard });
+        }
+      }
+
+      // Restore the sticky keyboard after all cards are sent
+      await ctx.reply(`That's your personalized recommendation! 😊`, {
+        reply_markup: USER_KEYBOARD,
+      });
+
       this.logger.log(
-        `Skincare advice delivered to ${customer.fullName} (skin type: ${userSkinType}, ` +
-          `${filteredProducts.length}/${allProducts.length} products matched)`,
+        `Advice + ${recommendedProducts.length} product cards sent to ${customer.fullName} (skin type: ${userSkinType})`,
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Failed to generate advice for chatId=${chatId}: ${msg}`);
+      this.logger.error(
+        `Failed to generate advice for chatId=${chatId}: ${msg}`,
+      );
       await ctx.reply(
-        `Sorry, something went wrong while generating your skincare advice. ` +
-          `Please try again later.`,
+        `Sorry, something went wrong while generating your skincare advice. Please try again later.`,
         { reply_markup: USER_KEYBOARD },
       );
     }

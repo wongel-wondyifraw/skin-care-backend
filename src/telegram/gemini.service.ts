@@ -158,7 +158,51 @@ export class GeminiService {
   }
 
   /**
-   * Post-processing grounding check.
+   * Ask Gemini which products it recommended in the advice text.
+   * Returns a list of exact product names matched against the DB inventory.
+   * This is a lightweight second call so we get structured data to build photo cards.
+   */
+  async extractRecommendedProductNames(
+    adviceText: string,
+    allProducts: Product[],
+  ): Promise<Product[]> {
+    const exactProductNames = allProducts.map((p) => `"${p.name}"`).join(', ');
+
+    const prompt =
+      `From the following skincare advice text, extract the names of products that were recommended.\n\n` +
+      `ADVICE TEXT:\n${adviceText}\n\n` +
+      `ALLOWED PRODUCT NAMES (only choose from this list):\n[ ${exactProductNames} ]\n\n` +
+      `Return ONLY a comma-separated list of the exact product names that appear in the advice text above.\n` +
+      `Do NOT include any explanation, numbering, or extra text — just the names separated by commas.\n` +
+      `Example output: Product A, Product B, Product C`;
+
+    try {
+      const result = await this.model.generateContent(prompt);
+      const raw = (await result.response).text().trim();
+
+      // Parse the comma-separated names and match against DB records (case-insensitive)
+      const extractedNames = raw
+        .split(',')
+        .map((n) => n.trim().replace(/^"|"$/g, ''));
+
+      const matched = allProducts.filter((p) =>
+        extractedNames.some(
+          (name) => name.toLowerCase() === p.name.toLowerCase(),
+        ),
+      );
+
+      this.logger.log(
+        `Extracted ${matched.length} recommended products from advice text`,
+      );
+
+      return matched;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to extract product names: ${msg}`);
+      // Fallback: return all filtered products so user still sees cards
+      return allProducts;
+    }
+  }
    * If the AI response doesn't mention any product from the database,
    * it almost certainly hallucinated — return a safe fallback.
    */
