@@ -1,7 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order, OrderStatus } from './order.entity.js';
+import { Product } from '../product/product.entity.js';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -22,6 +27,8 @@ export class OrderService {
   constructor(
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
+    @InjectRepository(Product)
+    private readonly productRepository: Repository<Product>,
   ) {}
 
   private hydrateQuery() {
@@ -74,13 +81,20 @@ export class OrderService {
     customerId: string;
     productId: string;
     cost: number;
+    quantity: number;
     deliveryAddress?: string | null;
     status?: OrderStatus;
   }): Promise<Order> {
+    const quantity = Math.floor(Number(data.quantity));
+    if (!Number.isFinite(quantity) || quantity < 1) {
+      throw new BadRequestException('Quantity must be at least 1');
+    }
+
     const order = this.orderRepository.create({
       customerId: data.customerId,
       productId: data.productId,
       cost: data.cost,
+      quantity,
       deliveryAddress: data.deliveryAddress?.trim() || null,
       status: data.status ?? 'pending',
     });
@@ -88,8 +102,36 @@ export class OrderService {
     return this.findOne(saved.id);
   }
 
+  /**
+   * pending → delivered: subtract order.quantity from product stock
+   * pending → cancelled: no stock change
+   */
   async updateStatus(id: string, status: OrderStatus): Promise<Order> {
+    if (status !== 'delivered' && status !== 'cancelled') {
+      throw new BadRequestException('Status must be delivered or cancelled');
+    }
+
     const order = await this.findOne(id);
+    if (order.status !== 'pending') {
+      throw new BadRequestException(
+        `Only pending orders can be updated (current: ${order.status})`,
+      );
+    }
+
+    if (status === 'delivered') {
+      const product = await this.productRepository.findOne({
+        where: { id: order.productId },
+      });
+      if (!product) {
+        throw new NotFoundException(
+          `Product for order ${id} was not found`,
+        );
+      }
+      const qty = Math.max(1, order.quantity ?? 1);
+      product.stock = Math.max(0, (product.stock ?? 0) - qty);
+      await this.productRepository.save(product);
+    }
+
     order.status = status;
     await this.orderRepository.save(order);
     return this.findOne(id);

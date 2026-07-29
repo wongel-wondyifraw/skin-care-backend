@@ -52,8 +52,10 @@ export class OrderController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { status: OrderStatus },
   ) {
-    if (body?.status !== 'pending' && body?.status !== 'delivered') {
-      throw new BadRequestException('Status must be pending or delivered');
+    if (body?.status !== 'delivered' && body?.status !== 'cancelled') {
+      throw new BadRequestException(
+        'Status must be delivered or cancelled',
+      );
     }
     return this.orderService.updateStatus(id, body.status);
   }

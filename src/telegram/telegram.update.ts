@@ -389,25 +389,75 @@ export class TelegramUpdate {
 
     this.profileEditSessions.delete(chatId);
     this.orderSessions.set(chatId, {
-      step: 'awaiting_delivery_address',
+      step: 'awaiting_quantity',
       productId: product.id,
       customerId: customer.id,
       cost: Number(product.price) || 0,
       productName: product.name,
+      maxStock: product.stock,
     });
+
+    const qtyButtons = [
+      [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
+      [{ text: '❌ Cancel order' }],
+    ];
 
     await ctx.reply(
       `🛒 Ordering: ${product.name}\n` +
-        `💰 Cost: ${Number(product.price).toFixed(2)} ETB\n\n` +
-        `Optionally enter a delivery address, or tap Skip to place the order without one.`,
+        `💰 Unit price: ${Number(product.price).toFixed(2)} ETB\n` +
+        `📦 In stock: ${product.stock}\n\n` +
+        `How many would you like?\n` +
+        `Tap 1–4, or type a number if you need more.`,
       {
         reply_markup: {
-          keyboard: [[{ text: 'Skip' }], [{ text: '❌ Cancel order' }]],
+          keyboard: qtyButtons,
           resize_keyboard: true,
           one_time_keyboard: true,
         },
       },
     );
+  }
+
+  // ─────────────────────────────────────────────
+  // Inline: Cancel a pending order
+  // ─────────────────────────────────────────────
+  @Action(/^cancel_order_(.+)$/)
+  async onCancelOrderCallback(@Ctx() ctx: Context) {
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const orderId = data.replace(/^cancel_order_/, '');
+
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.answerCbQuery('Please register first.');
+      return;
+    }
+
+    try {
+      const order = await this.orderService.findOne(orderId);
+      if (order.customerId !== customer.id) {
+        await ctx.answerCbQuery('This order is not yours.');
+        return;
+      }
+      if (order.status !== 'pending') {
+        await ctx.answerCbQuery(`Order is already ${order.status}.`);
+        return;
+      }
+
+      await this.orderService.updateStatus(orderId, 'cancelled');
+      await ctx.answerCbQuery('Order cancelled');
+      await ctx.reply(
+        `❌ Order cancelled.\n\n🌿 ${order.product?.name ?? 'Product'}\n` +
+          `Qty: ${order.quantity}\nNo stock was changed.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Cancel order failed: ${msg}`);
+      await ctx.answerCbQuery('Could not cancel this order.');
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -426,10 +476,10 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Order delivery address flow ──────────────────────────────
+    // ── Order flow (quantity → address) ──────────────────────────
     const orderSession = this.orderSessions.get(chatId);
     if (orderSession) {
-      await this.handleOrderAddressFlow(ctx, chatId, orderSession, text);
+      await this.handleOrderFlow(ctx, chatId, orderSession, text);
       return;
     }
 
@@ -487,7 +537,7 @@ export class TelegramUpdate {
     }
   }
 
-  private async handleOrderAddressFlow(
+  private async handleOrderFlow(
     ctx: Context,
     chatId: string,
     session: OrderSession,
@@ -499,18 +549,77 @@ export class TelegramUpdate {
       return;
     }
 
+    if (session.step === 'awaiting_quantity') {
+      const qty = Number.parseInt(text, 10);
+      if (!Number.isFinite(qty) || qty < 1) {
+        await ctx.reply(
+          `Please tap 1–4 or type a whole number (1 or more).`,
+          {
+            reply_markup: {
+              keyboard: [
+                [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
+                [{ text: '❌ Cancel order' }],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      if (qty > session.maxStock) {
+        await ctx.reply(
+          `Only ${session.maxStock} in stock. Please choose a smaller quantity.`,
+          {
+            reply_markup: {
+              keyboard: [
+                [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
+                [{ text: '❌ Cancel order' }],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      session.quantity = qty;
+      session.step = 'awaiting_delivery_address';
+      this.orderSessions.set(chatId, session);
+
+      const lineTotal = session.cost * qty;
+      await ctx.reply(
+        `Qty: ${qty} × ${session.cost.toFixed(2)} = ${lineTotal.toFixed(2)} ETB\n\n` +
+          `Optionally enter a delivery address, or tap Skip to place the order without one.`,
+        {
+          reply_markup: {
+            keyboard: [[{ text: 'Skip' }], [{ text: '❌ Cancel order' }]],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+      return;
+    }
+
+    // awaiting_delivery_address
     const skip = !text || text.toLowerCase() === 'skip';
     const deliveryAddress = skip ? null : text;
+    const quantity = session.quantity ?? 1;
 
     try {
-      await this.orderService.create({
+      const order = await this.orderService.create({
         customerId: session.customerId,
         productId: session.productId,
         cost: session.cost,
+        quantity,
         deliveryAddress,
       });
       this.orderSessions.delete(chatId);
 
+      const lineTotal = session.cost * quantity;
       const addressLine = deliveryAddress
         ? `📍 Delivery: ${deliveryAddress}\n`
         : `📍 Delivery: not provided\n`;
@@ -518,12 +627,28 @@ export class TelegramUpdate {
       await ctx.reply(
         `✅ Order placed!\n\n` +
           `🌿 ${session.productName}\n` +
-          `💰 ${session.cost.toFixed(2)} ETB\n` +
+          `📦 Qty: ${quantity}\n` +
+          `💰 ${lineTotal.toFixed(2)} ETB\n` +
           addressLine +
           `⏳ Status: pending\n\n` +
-          `We'll contact you soon to confirm delivery.`,
-        { reply_markup: USER_KEYBOARD },
+          `We'll contact you soon to confirm delivery.\n` +
+          `You can cancel this order while it is still pending.`,
+        {
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: '❌ Cancel order',
+                  callback_data: `cancel_order_${order.id}`,
+                },
+              ],
+            ],
+          },
+        },
       );
+      await ctx.reply(`Use the menu below anytime:`, {
+        reply_markup: USER_KEYBOARD,
+      });
     } catch (err) {
       this.orderSessions.delete(chatId);
       const msg = err instanceof Error ? err.message : String(err);

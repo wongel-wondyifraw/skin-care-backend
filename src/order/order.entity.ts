@@ -10,7 +10,7 @@ import {
 import { Customer } from '../customer/customer.entity.js';
 import { Product } from '../product/product.entity.js';
 
-export type OrderStatus = 'pending' | 'delivered';
+export type OrderStatus = 'pending' | 'delivered' | 'cancelled';
 
 @Entity('orders')
 export class Order {
@@ -33,9 +33,12 @@ export class Order {
   @JoinColumn({ name: 'productId' })
   product: Product;
 
-  /** Price at the time of order */
+  /** Unit price at the time of order */
   @Column({ type: 'decimal', precision: 10, scale: 2 })
   cost: number;
+
+  @Column({ type: 'int', default: 1 })
+  quantity: number;
 
   @Column({ type: 'text', nullable: true })
   deliveryAddress: string | null;

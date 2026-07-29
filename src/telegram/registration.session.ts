@@ -115,16 +115,21 @@ export class ProfileEditSessionStore {
   }
 }
 
-// ─── Order (optional delivery address) ─────────────────────────────────────
+// ─── Order (quantity → optional delivery address) ──────────────────────────
 
-export type OrderSessionStep = 'awaiting_delivery_address';
+export type OrderSessionStep =
+  | 'awaiting_quantity'
+  | 'awaiting_delivery_address';
 
 export interface OrderSession {
   step: OrderSessionStep;
   productId: string;
   customerId: string;
+  /** Unit price */
   cost: number;
   productName: string;
+  maxStock: number;
+  quantity?: number;
 }
 
 export class OrderSessionStore {
