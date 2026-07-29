@@ -18,6 +18,7 @@ import {
 // ─── Persistent admin keyboard shown at the bottom of the chat ──────────────
 const ADMIN_KEYBOARD = {
   keyboard: [
+    [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
     [{ text: '📦 Products' }, { text: '👥 Customers' }],
     [{ text: '🛒 Orders' }, { text: '⚙️ Settings' }],
     [{ text: '🚪 Logout' }],
@@ -356,12 +357,6 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Admin menu button presses ────────────────────────────────
-    if (this.adminSessions.isAuthenticated(chatId)) {
-      await this.handleAdminMenuAction(ctx, chatId, text);
-      return;
-    }
-
     // ── Profile edit flow ────────────────────────────────────────
     const profileSession = this.profileEditSessions.get(chatId);
     if (profileSession) {
@@ -369,7 +364,7 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── "👤 Profile" button press ───────────────────────────────
+    // ── "👤 Profile" button press (always available) ─────────────
     if (text === '👤 Profile') {
       const telegramId = ctx.from!.id;
       const customer = await this.customerService.findByTelegramId(telegramId);
@@ -379,9 +374,15 @@ export class TelegramUpdate {
       }
     }
 
-    // ── "💡 Get Advice" button press ─────────────────────────────
+    // ── "💡 Get Advice" button press (always available) ──────────
     if (text === '💡 Get Advice') {
       await this.handleGetAdvice(ctx, chatId);
+      return;
+    }
+
+    // ── Admin menu button presses ────────────────────────────────
+    if (this.adminSessions.isAuthenticated(chatId)) {
+      await this.handleAdminMenuAction(ctx, chatId, text);
       return;
     }
 
@@ -718,7 +719,7 @@ export class TelegramUpdate {
       case '🚪 Logout':
         this.adminSessions.delete(chatId);
         await ctx.reply(`👋 You have been logged out of admin mode.`, {
-          reply_markup: { remove_keyboard: true },
+          reply_markup: USER_KEYBOARD,
         });
         break;
 
