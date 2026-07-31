@@ -2,10 +2,12 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnModuleInit,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { ILike, In, Repository } from 'typeorm';
+import { DataSource, ILike, In, Repository } from 'typeorm';
 import { Product } from './product.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
 
@@ -40,13 +42,47 @@ export type ProductWriteInput = {
 };
 
 @Injectable()
-export class ProductService {
+export class ProductService implements OnModuleInit {
+  private readonly logger = new Logger(ProductService.name);
+
   constructor(
     @InjectRepository(Product)
     private productRepository: Repository<Product>,
     @InjectRepository(SkinType)
     private skinTypeRepository: Repository<SkinType>,
+    private dataSource: DataSource,
   ) {}
+
+  /** Additive schema fixes for production DBs where synchronize lagged (e.g. pooler). */
+  async onModuleInit() {
+    try {
+      await this.dataSource.query(`
+        ALTER TABLE products
+        ADD COLUMN IF NOT EXISTS brand character varying(120)
+      `);
+      await this.dataSource.query(`
+        CREATE TABLE IF NOT EXISTS product_skin_types (
+          "productId" uuid NOT NULL,
+          "skinTypeId" uuid NOT NULL,
+          CONSTRAINT "PK_product_skin_types" PRIMARY KEY ("productId", "skinTypeId"),
+          CONSTRAINT "FK_product_skin_types_product"
+            FOREIGN KEY ("productId") REFERENCES products(id) ON DELETE CASCADE ON UPDATE CASCADE,
+          CONSTRAINT "FK_product_skin_types_skin"
+            FOREIGN KEY ("skinTypeId") REFERENCES skins(id) ON DELETE CASCADE ON UPDATE CASCADE
+        )
+      `);
+      await this.dataSource.query(`
+        INSERT INTO product_skin_types ("productId", "skinTypeId")
+        SELECT id, "skinTypeId" FROM products
+        WHERE "skinTypeId" IS NOT NULL
+        ON CONFLICT DO NOTHING
+      `);
+    } catch (err) {
+      this.logger.warn(
+        `Product schema ensure skipped/failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   private hydrateLegacySkinTypes(product: Product): Product {
     if (
@@ -78,11 +114,16 @@ export class ProductService {
       .skip((page - 1) * pageSize)
       .take(pageSize);
 
+    // Many-to-many joins make TypeORM use SELECT DISTINCT. Postgres then requires
+    // ORDER BY expressions to appear in the select list — avoid bare LOWER(...).
     const sort = query.sort === 'recent' ? 'recent' : 'name';
     if (sort === 'recent') {
       qb.orderBy('product.createdAt', 'DESC');
     } else {
-      qb.orderBy('LOWER(product.name)', 'ASC');
+      qb.addSelect('LOWER(product.name)', 'product_name_sort').orderBy(
+        'product_name_sort',
+        'ASC',
+      );
     }
 
     const search = query.search?.trim();
