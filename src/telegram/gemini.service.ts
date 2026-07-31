@@ -56,7 +56,11 @@ export class GeminiService {
     const productList = allProducts
       .map((p) => {
         const category = p.category?.name || 'Uncategorized';
-        const suitableFor = p.skinType?.name || 'All skin types';
+        const suitableFor =
+          p.skinTypes?.length
+            ? p.skinTypes.map((s) => s.name).join(', ')
+            : p.skinType?.name || 'All skin types';
+        const brand = p.brand?.trim() ? `  Brand: ${p.brand.trim()}\n` : '';
         const price = p.price
           ? `${Number(p.price).toFixed(2)} ETB`
           : 'Price not set';
@@ -65,6 +69,7 @@ export class GeminiService {
 
         return (
           `- Product Name: ${p.name}\n` +
+          brand +
           `  Category: ${category}\n` +
           `  Suitable for: ${suitableFor}\n` +
           `  Price: ${price}\n` +

@@ -4,7 +4,9 @@ import {
   Column,
   CreateDateColumn,
   ManyToOne,
+  ManyToMany,
   JoinColumn,
+  JoinTable,
   Index,
 } from 'typeorm';
 import { Category } from '../category/category.entity';
@@ -18,6 +20,10 @@ export class Product {
   @Column()
   name: string;
 
+  /** Optional brand / manufacturer name */
+  @Column({ type: 'varchar', length: 120, nullable: true })
+  brand: string | null;
+
   @Column({ type: 'text', nullable: true })
   description: string;
 
@@ -29,7 +35,7 @@ export class Product {
 
   @Index()
   @Column({ nullable: true })
-  categoryId: string;
+  categoryId: string | null;
 
   @ManyToOne(() => Category, {
     nullable: true,
@@ -38,9 +44,10 @@ export class Product {
   @JoinColumn({ name: 'categoryId' })
   category: Category;
 
+  /** Legacy single skin type — kept for older rows / filters */
   @Index()
   @Column({ nullable: true })
-  skinTypeId: string;
+  skinTypeId: string | null;
 
   @ManyToOne(() => SkinType, {
     nullable: true,
@@ -48,6 +55,15 @@ export class Product {
   })
   @JoinColumn({ name: 'skinTypeId' })
   skinType: SkinType;
+
+  /** Preferred: one product can suit multiple skin types */
+  @ManyToMany(() => SkinType, { eager: false })
+  @JoinTable({
+    name: 'product_skin_types',
+    joinColumn: { name: 'productId', referencedColumnName: 'id' },
+    inverseJoinColumn: { name: 'skinTypeId', referencedColumnName: 'id' },
+  })
+  skinTypes: SkinType[];
 
   @Column({ type: 'int', default: 0 })
   stock: number;

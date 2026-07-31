@@ -171,15 +171,22 @@ export class TelegramUpdate {
 
       const userSkinType = customer.skinType?.name || null;
 
-      // Filter: only products matching user's skin type or "All"
+      // Filter: products matching user's skin type, "All", or any listed skin type
       let filteredProducts = allProducts;
       if (userSkinType && userSkinType.toLowerCase() !== 'all') {
+        const target = userSkinType.toLowerCase();
         filteredProducts = allProducts.filter((p) => {
-          const productSkinType = (p.skinType?.name || 'All').toLowerCase();
-          return (
-            productSkinType === userSkinType.toLowerCase() ||
-            productSkinType === 'all'
-          );
+          const skins =
+            p.skinTypes?.length
+              ? p.skinTypes
+              : p.skinType
+                ? [p.skinType]
+                : [];
+          if (skins.length === 0) return true;
+          return skins.some((s) => {
+            const name = (s.name || 'All').toLowerCase();
+            return name === target || name === 'all';
+          });
         });
       }
 
@@ -263,13 +270,20 @@ export class TelegramUpdate {
             ? `✅ In stock (${product.stock} units)`
             : `❌ Out of stock`;
         const category = product.category?.name || 'Uncategorized';
-        const skinTypeName = product.skinType?.name || 'All skin types';
+        const skinNames =
+          product.skinTypes?.length
+            ? product.skinTypes.map((s) => s.name).join(', ')
+            : product.skinType?.name || 'All skin types';
+        const brandLine = product.brand?.trim()
+          ? `🏷️ Brand: ${product.brand.trim()}\n`
+          : '';
         const description = product.description?.trim() || 'No description available.';
 
         const caption =
           `🌿 ${product.name}\n\n` +
+          brandLine +
           `📂 Category: ${category}\n` +
-          `💧 Suitable for: ${skinTypeName} skin\n` +
+          `💧 Suitable for: ${skinNames} skin\n` +
           `💰 Price: ${price}\n` +
           `${stockLine}\n\n` +
           `📝 ${description}`;

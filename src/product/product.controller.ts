@@ -12,6 +12,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ProductService } from './product.service';
+import type { ProductWriteInput } from './product.service';
 
 @UseGuards(JwtAuthGuard)
 @Controller('products')
@@ -54,18 +55,7 @@ export class ProductController {
   }
 
   @Post()
-  create(
-    @Body()
-    body: {
-      name: string;
-      description?: string;
-      image: string;
-      assetId?: string;
-      categoryId?: string;
-      skinTypeId?: string;
-      stock?: number;
-    },
-  ) {
+  create(@Body() body: ProductWriteInput) {
     return this.productService.create(body);
   }
 
@@ -80,16 +70,7 @@ export class ProductController {
   @Patch(':id')
   update(
     @Param('id', ParseUUIDPipe) id: string,
-    @Body()
-    body: {
-      image?: string;
-      assetId?: string;
-      stock?: number;
-      name?: string;
-      description?: string;
-      categoryId?: string;
-      skinTypeId?: string;
-    },
+    @Body() body: ProductWriteInput,
   ) {
     return this.productService.update(id, body);
   }
