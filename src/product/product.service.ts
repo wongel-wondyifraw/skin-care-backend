@@ -23,6 +23,7 @@ export interface ProductListQuery {
   categoryId?: string;
   skinTypeId?: string;
   stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
+  sort?: 'name' | 'recent';
 }
 
 export type ProductWriteInput = {
@@ -74,9 +75,15 @@ export class ProductService {
       .leftJoinAndSelect('product.category', 'category')
       .leftJoinAndSelect('product.skinType', 'skinType')
       .leftJoinAndSelect('product.skinTypes', 'skinTypes')
-      .orderBy('product.createdAt', 'DESC')
       .skip((page - 1) * pageSize)
       .take(pageSize);
+
+    const sort = query.sort === 'recent' ? 'recent' : 'name';
+    if (sort === 'recent') {
+      qb.orderBy('product.createdAt', 'DESC');
+    } else {
+      qb.orderBy('LOWER(product.name)', 'ASC');
+    }
 
     const search = query.search?.trim();
     if (search) {

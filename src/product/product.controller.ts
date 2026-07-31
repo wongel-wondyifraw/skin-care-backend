@@ -27,6 +27,7 @@ export class ProductController {
     @Query('categoryId') categoryId?: string,
     @Query('skinTypeId') skinTypeId?: string,
     @Query('stock') stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock',
+    @Query('sort') sort?: 'name' | 'recent',
   ) {
     if (
       page !== undefined ||
@@ -34,7 +35,8 @@ export class ProductController {
       search !== undefined ||
       categoryId !== undefined ||
       skinTypeId !== undefined ||
-      stock !== undefined
+      stock !== undefined ||
+      sort !== undefined
     ) {
       return this.productService.findPage({
         page: page ? Number(page) : undefined,
@@ -43,6 +45,7 @@ export class ProductController {
         categoryId,
         skinTypeId,
         stock,
+        sort,
       });
     }
 
