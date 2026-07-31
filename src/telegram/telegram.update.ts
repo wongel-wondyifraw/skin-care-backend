@@ -260,33 +260,15 @@ export class TelegramUpdate {
         `🛍️ Here are the products recommended for you:`,
       );
 
-      for (const product of recommendedProducts) {
+      for (let i = 0; i < recommendedProducts.length; i++) {
+        const product = recommendedProducts[i];
         const price =
           product.price != null
             ? `${Number(product.price).toFixed(2)} ETB`
             : 'Price not set';
-        const stockLine =
-          product.stock > 0
-            ? `✅ In stock (${product.stock} units)`
-            : `❌ Out of stock`;
-        const category = product.category?.name || 'Uncategorized';
-        const skinNames =
-          product.skinTypes?.length
-            ? product.skinTypes.map((s) => s.name).join(', ')
-            : product.skinType?.name || 'All skin types';
-        const brandLine = product.brand?.trim()
-          ? `🏷️ Brand: ${product.brand.trim()}\n`
-          : '';
-        const description = product.description?.trim() || 'No description available.';
 
-        const caption =
-          `🌿 ${product.name}\n\n` +
-          brandLine +
-          `📂 Category: ${category}\n` +
-          `💧 Suitable for: ${skinNames} skin\n` +
-          `💰 Price: ${price}\n` +
-          `${stockLine}\n\n` +
-          `📝 ${description}`;
+        // Caption stays short — details already appear in the advice text
+        const caption = `🌿 ${product.name}\n💰 ${price}`;
 
         const inlineKeyboard = {
           inline_keyboard: [
@@ -299,21 +281,11 @@ export class TelegramUpdate {
           ],
         };
 
-        try {
-          // Send photo using the Cloudinary URL stored in product.image
-          await ctx.replyWithPhoto(
-            { url: product.image },
-            {
-              caption,
-              reply_markup: inlineKeyboard,
-            },
-          );
-        } catch {
-          // Image URL might be broken — fall back to a text card
-          this.logger.warn(
-            `Failed to send photo for product ${product.name}, sending text card instead`,
-          );
-          await ctx.reply(caption, { reply_markup: inlineKeyboard });
+        await this.sendProductPhotoCard(ctx, product, caption, inlineKeyboard);
+
+        // Brief pause so Telegram reliably accepts consecutive photo uploads
+        if (i < recommendedProducts.length - 1) {
+          await new Promise((resolve) => setTimeout(resolve, 450));
         }
       }
 
@@ -335,6 +307,70 @@ export class TelegramUpdate {
         { reply_markup: USER_KEYBOARD },
       );
     }
+  }
+
+  /**
+   * Send a product photo reliably by downloading the image first.
+   * Telegram often fails on replyWithPhoto({ url }) for 2nd+ images in a burst.
+   */
+  private async sendProductPhotoCard(
+    ctx: Context,
+    product: { id: string; name: string; image?: string | null },
+    caption: string,
+    replyMarkup: { inline_keyboard: { text: string; callback_data: string }[][] },
+  ) {
+    const imageUrl = product.image?.trim();
+
+    if (imageUrl) {
+      try {
+        const res = await fetch(imageUrl, {
+          headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (!res.ok) {
+          throw new Error(`Image fetch HTTP ${res.status}`);
+        }
+        const buffer = Buffer.from(await res.arrayBuffer());
+        if (buffer.length === 0) {
+          throw new Error('Empty image buffer');
+        }
+
+        const lower = imageUrl.toLowerCase();
+        const filename = lower.includes('.png')
+          ? `${product.id}.png`
+          : lower.includes('.webp')
+            ? `${product.id}.webp`
+            : `${product.id}.jpg`;
+
+        await ctx.replyWithPhoto(
+          { source: buffer, filename },
+          { caption, reply_markup: replyMarkup },
+        );
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Buffer photo failed for "${product.name}": ${msg}. Trying URL…`,
+        );
+      }
+
+      try {
+        await ctx.replyWithPhoto(imageUrl, {
+          caption,
+          reply_markup: replyMarkup,
+        });
+        return;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `URL photo failed for "${product.name}": ${msg}. Falling back to text.`,
+        );
+      }
+    } else {
+      this.logger.warn(`No image URL for product "${product.name}"`);
+    }
+
+    await ctx.reply(caption, { reply_markup: replyMarkup });
   }
 
   // ─────────────────────────────────────────────
