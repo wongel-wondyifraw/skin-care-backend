@@ -8,6 +8,7 @@ import { TelegramUpdate } from './telegram.update.js';
 import { CustomerModule } from '../customer/customer.module.js';
 import { SkinTypeModule } from '../skin-type/skin-type.module.js';
 import { ProductModule } from '../product/product.module.js';
+import { CategoryModule } from '../category/category.module.js';
 import { OrderModule } from '../order/order.module.js';
 import { GeminiService } from './gemini.service.js';
 
@@ -17,6 +18,7 @@ import { GeminiService } from './gemini.service.js';
     CustomerModule,
     SkinTypeModule,
     ProductModule,
+    CategoryModule,
     forwardRef(() => OrderModule),
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],

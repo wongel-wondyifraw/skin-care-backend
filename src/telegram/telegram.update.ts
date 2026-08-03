@@ -6,10 +6,13 @@ import { Message } from 'telegraf/types';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { CustomerService } from '../customer/customer.service.js';
 import { ProductService } from '../product/product.service.js';
+import { CategoryService } from '../category/category.service.js';
 import { OrderService } from '../order/order.service.js';
 import { GeminiService } from './gemini.service.js';
 import {
   AdminSessionStore,
+  CatalogBrowseSession,
+  CatalogBrowseSessionStore,
   OrderSession,
   OrderSessionStore,
   ProfileEditSession,
@@ -18,20 +21,34 @@ import {
   RegistrationSessionStore,
 } from './registration.session.js';
 
+const CATALOG_PAGE_SIZE = 8;
+
 // ─── Persistent admin keyboard shown at the bottom of the chat ──────────────
 const ADMIN_KEYBOARD = {
   keyboard: [
     [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
     [{ text: '📦 Products' }, { text: '👥 Customers' }],
-    [{ text: '🛒 Orders' }, { text: '⚙️ Settings' }],
-    [{ text: '🚪 Logout' }],
+    [{ text: '🛒 Orders' }, { text: '🌐 Web Catalog' }],
+    [{ text: '⚙️ Settings' }, { text: '🚪 Logout' }],
   ],
   resize_keyboard: true,
 };
 
-// ─── User keyboard with profile button ───────────────────────────────────────
+// ─── User keyboard with profile + products ───────────────────────────────────
 const USER_KEYBOARD = {
-  keyboard: [[{ text: '👤 Profile' }, { text: '💡 Get Advice' }]],
+  keyboard: [
+    [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
+    [{ text: '📦 Products' }],
+  ],
+  resize_keyboard: true,
+};
+
+/** Sticky submenu after tapping Products */
+const PRODUCTS_KEYBOARD = {
+  keyboard: [
+    [{ text: '✨ Recommended' }, { text: '📂 Categories' }],
+    [{ text: '🔍 Search Product' }, { text: '◀️ Back' }],
+  ],
   resize_keyboard: true,
 };
 
@@ -42,11 +59,13 @@ export class TelegramUpdate {
   private readonly adminSessions = new AdminSessionStore();
   private readonly profileEditSessions = new ProfileEditSessionStore();
   private readonly orderSessions = new OrderSessionStore();
+  private readonly catalogSessions = new CatalogBrowseSessionStore();
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
     private readonly customerService: CustomerService,
     private readonly productService: ProductService,
+    private readonly categoryService: CategoryService,
     private readonly orderService: OrderService,
     private readonly geminiService: GeminiService,
     private readonly config: ConfigService,
@@ -373,6 +392,345 @@ export class TelegramUpdate {
     await ctx.reply(caption, { reply_markup: replyMarkup });
   }
 
+  private productOrderMarkup(product: { id: string; stock: number }) {
+    return {
+      inline_keyboard: [
+        [
+          {
+            text: product.stock > 0 ? '🛒 Order Now' : '🔔 Notify Me',
+            callback_data: `order_${product.id}`,
+          },
+        ],
+      ],
+    };
+  }
+
+  private truncateLabel(name: string, max = 40): string {
+    const trimmed = name.trim();
+    if (trimmed.length <= max) return trimmed;
+    return `${trimmed.slice(0, max - 1)}…`;
+  }
+
+  private async showProductsMenu(ctx: Context, header?: string) {
+    await ctx.reply(
+      header ??
+        `📦 Products\n\nChoose how you'd like to browse:`,
+      { reply_markup: PRODUCTS_KEYBOARD },
+    );
+  }
+
+  private async sendProductCardById(ctx: Context, productId: string) {
+    try {
+      const product = await this.productService.findOne(productId);
+      const price =
+        product.price != null
+          ? `${Number(product.price).toFixed(2)} ETB`
+          : 'Price not set';
+      const stockNote =
+        product.stock > 0 ? `In stock (${product.stock})` : 'Out of stock';
+      const caption =
+        `🌿 ${product.name}\n` +
+        (product.brand?.trim() ? `🏷️ ${product.brand.trim()}\n` : '') +
+        `💰 ${price}\n` +
+        `📦 ${stockNote}`;
+
+      await this.sendProductPhotoCard(
+        ctx,
+        product,
+        caption,
+        this.productOrderMarkup(product),
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`sendProductCardById failed: ${msg}`);
+      await ctx.reply(`Sorry, that product is no longer available.`);
+    }
+  }
+
+  private async showCategoryPicker(ctx: Context) {
+    const categories = await this.categoryService.findWithProducts();
+    if (categories.length === 0) {
+      await ctx.reply(
+        `No categories with products yet. Please check back later!`,
+        { reply_markup: PRODUCTS_KEYBOARD },
+      );
+      return;
+    }
+
+    const rows = categories.map((c) => [
+      {
+        text: `📂 ${this.truncateLabel(c.name, 36)}`,
+        callback_data: `pcat_${c.id}_1`,
+      },
+    ]);
+
+    await ctx.reply(`📂 Pick a category:`, {
+      reply_markup: { inline_keyboard: rows },
+    });
+  }
+
+  private async showCategoryProductPage(
+    ctx: Context,
+    chatId: string,
+    categoryId: string,
+    page: number,
+    editMessage: boolean,
+  ) {
+    let categoryName = 'Category';
+    try {
+      const cat = await this.categoryService.findOne(categoryId);
+      categoryName = cat.name;
+    } catch {
+      /* keep default */
+    }
+
+    this.catalogSessions.set(chatId, {
+      step: 'browsing',
+      categoryId,
+      categoryName,
+    });
+
+    const result = await this.productService.findPage({
+      page,
+      pageSize: CATALOG_PAGE_SIZE,
+      categoryId,
+      sort: 'name',
+    });
+
+    if (result.total === 0) {
+      const empty = `No products in ${categoryName} yet.`;
+      if (editMessage && ctx.callbackQuery) {
+        await ctx.answerCbQuery(empty);
+        return;
+      }
+      await ctx.reply(empty, { reply_markup: PRODUCTS_KEYBOARD });
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+    const safePage = Math.min(Math.max(1, page), totalPages);
+
+    const productRows = result.items.map((p) => [
+      {
+        text: this.truncateLabel(p.name),
+        callback_data: `pview_${p.id}`,
+      },
+    ]);
+
+    const nav: { text: string; callback_data: string }[] = [];
+    if (safePage > 1) {
+      nav.push({
+        text: '◀️ Prev',
+        callback_data: `pcat_${categoryId}_${safePage - 1}`,
+      });
+    }
+    nav.push({
+      text: `${safePage}/${totalPages}`,
+      callback_data: `pcat_${categoryId}_${safePage}`,
+    });
+    if (safePage < totalPages) {
+      nav.push({
+        text: 'Next ▶️',
+        callback_data: `pcat_${categoryId}_${safePage + 1}`,
+      });
+    }
+
+    const markup = {
+      inline_keyboard: [
+        ...productRows,
+        nav,
+        [{ text: '📂 All categories', callback_data: 'pcats' }],
+      ],
+    };
+
+    const text =
+      `📂 ${categoryName}\n` +
+      `Tap a product name (${result.total} total):`;
+
+    if (editMessage && 'editMessageText' in ctx) {
+      try {
+        await ctx.editMessageText(text, { reply_markup: markup });
+        return;
+      } catch {
+        /* fall through to new message */
+      }
+    }
+
+    await ctx.reply(text, { reply_markup: markup });
+  }
+
+  private async showSearchProductPage(
+    ctx: Context,
+    chatId: string,
+    query: string,
+    page: number,
+    editMessage: boolean,
+  ) {
+    const search = query.trim();
+    this.catalogSessions.set(chatId, {
+      step: 'browsing',
+      searchQuery: search,
+    });
+
+    const result = await this.productService.findPage({
+      page,
+      pageSize: CATALOG_PAGE_SIZE,
+      search,
+      sort: 'name',
+    });
+
+    if (result.total === 0) {
+      const empty = `No products matched "${search}". Try another name.`;
+      if (editMessage && ctx.callbackQuery) {
+        await ctx.answerCbQuery('No matches');
+      }
+      await ctx.reply(empty, { reply_markup: PRODUCTS_KEYBOARD });
+      return;
+    }
+
+    const totalPages = Math.max(1, Math.ceil(result.total / result.pageSize));
+    const safePage = Math.min(Math.max(1, page), totalPages);
+
+    const productRows = result.items.map((p) => [
+      {
+        text: this.truncateLabel(p.name),
+        callback_data: `pview_${p.id}`,
+      },
+    ]);
+
+    const nav: { text: string; callback_data: string }[] = [];
+    if (safePage > 1) {
+      nav.push({
+        text: '◀️ Prev',
+        callback_data: `psrch_${safePage - 1}`,
+      });
+    }
+    nav.push({
+      text: `${safePage}/${totalPages}`,
+      callback_data: `psrch_${safePage}`,
+    });
+    if (safePage < totalPages) {
+      nav.push({
+        text: 'Next ▶️',
+        callback_data: `psrch_${safePage + 1}`,
+      });
+    }
+
+    const markup = {
+      inline_keyboard: [
+        ...productRows,
+        nav,
+        [{ text: '🔍 New search', callback_data: 'psearch_new' }],
+      ],
+    };
+
+    const text =
+      `🔍 Results for "${search}"\n` +
+      `Tap a product (${result.total} found):`;
+
+    if (editMessage && 'editMessageText' in ctx) {
+      try {
+        await ctx.editMessageText(text, { reply_markup: markup });
+        return;
+      } catch {
+        /* fall through */
+      }
+    }
+
+    await ctx.reply(text, { reply_markup: markup });
+  }
+
+  private async startProductSearch(ctx: Context, chatId: string) {
+    this.catalogSessions.set(chatId, { step: 'awaiting_search' });
+    await ctx.reply(
+      `🔍 Search products\n\nType a product name (or part of it):`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: '◀️ Back' }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // Catalog browse callbacks
+  // ─────────────────────────────────────────────
+
+  @Action('pcats')
+  async onCatalogCategories(@Ctx() ctx: Context) {
+    await ctx.answerCbQuery();
+    await this.showCategoryPicker(ctx);
+  }
+
+  @Action(/^pcat_(.+)_(\d+)$/)
+  async onCatalogCategoryPage(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const match = /^pcat_(.+)_(\d+)$/.exec(data);
+    if (!match) {
+      await ctx.answerCbQuery();
+      return;
+    }
+    await ctx.answerCbQuery();
+    await this.showCategoryProductPage(
+      ctx,
+      chatId,
+      match[1],
+      Number(match[2]),
+      true,
+    );
+  }
+
+  @Action(/^psrch_(\d+)$/)
+  async onCatalogSearchPage(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const match = /^psrch_(\d+)$/.exec(data);
+    const session = this.catalogSessions.get(chatId);
+    if (!match || !session?.searchQuery) {
+      await ctx.answerCbQuery('Search expired — start a new search.');
+      return;
+    }
+    await ctx.answerCbQuery();
+    await this.showSearchProductPage(
+      ctx,
+      chatId,
+      session.searchQuery,
+      Number(match[1]),
+      true,
+    );
+  }
+
+  @Action('psearch_new')
+  async onCatalogSearchNew(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    await ctx.answerCbQuery();
+    await this.startProductSearch(ctx, chatId);
+  }
+
+  @Action(/^pview_(.+)$/)
+  async onCatalogProductView(@Ctx() ctx: Context) {
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const match = /^pview_(.+)$/.exec(data);
+    if (!match) {
+      await ctx.answerCbQuery();
+      return;
+    }
+    await ctx.answerCbQuery();
+    await this.sendProductCardById(ctx, match[1]);
+  }
+
   // ─────────────────────────────────────────────
   // /admin — enter admin mode
   // ─────────────────────────────────────────────
@@ -533,6 +891,25 @@ export class TelegramUpdate {
       return;
     }
 
+    // ── Product search query ─────────────────────────────────────
+    const catalogSession = this.catalogSessions.get(chatId);
+    if (catalogSession?.step === 'awaiting_search') {
+      if (text === '◀️ Back' || text === '📦 Products') {
+        this.catalogSessions.delete(chatId);
+        await this.showProductsMenu(ctx);
+        return;
+      }
+      if (!text || text.length < 2) {
+        await ctx.reply(`Please type at least 2 characters to search.`);
+        return;
+      }
+      await this.showSearchProductPage(ctx, chatId, text, 1, false);
+      await ctx.reply(`Use the menu below to browse more:`, {
+        reply_markup: PRODUCTS_KEYBOARD,
+      });
+      return;
+    }
+
     // ── Profile edit flow ────────────────────────────────────────
     const profileSession = this.profileEditSessions.get(chatId);
     if (profileSession) {
@@ -542,6 +919,7 @@ export class TelegramUpdate {
 
     // ── "👤 Profile" button press (always available) ─────────────
     if (text === '👤 Profile') {
+      this.catalogSessions.delete(chatId);
       const telegramId = ctx.from!.id;
       const customer = await this.customerService.findByTelegramId(telegramId);
       if (customer) {
@@ -552,7 +930,41 @@ export class TelegramUpdate {
 
     // ── "💡 Get Advice" button press (always available) ──────────
     if (text === '💡 Get Advice') {
+      this.catalogSessions.delete(chatId);
       await this.handleGetAdvice(ctx, chatId);
+      return;
+    }
+
+    // ── Products browse (user + admin sticky) ────────────────────
+    if (text === '📦 Products') {
+      this.catalogSessions.delete(chatId);
+      await this.showProductsMenu(ctx);
+      return;
+    }
+
+    if (text === '✨ Recommended') {
+      this.catalogSessions.delete(chatId);
+      await this.handleGetAdvice(ctx, chatId);
+      return;
+    }
+
+    if (text === '📂 Categories') {
+      this.catalogSessions.delete(chatId);
+      await this.showCategoryPicker(ctx);
+      return;
+    }
+
+    if (text === '🔍 Search Product') {
+      await this.startProductSearch(ctx, chatId);
+      return;
+    }
+
+    if (text === '◀️ Back') {
+      this.catalogSessions.delete(chatId);
+      const replyMarkup = this.adminSessions.isAuthenticated(chatId)
+        ? ADMIN_KEYBOARD
+        : USER_KEYBOARD;
+      await ctx.reply(`Main menu:`, { reply_markup: replyMarkup });
       return;
     }
 
@@ -991,9 +1403,9 @@ export class TelegramUpdate {
     text: string,
   ) {
     switch (text) {
-      case '📦 Products':
+      case '🌐 Web Catalog':
         await ctx.reply(
-          `📦 Products\n\nManage your product catalogue via the web admin panel:\n` +
+          `🌐 Web Catalog\n\nManage your product catalogue via the web admin panel:\n` +
             `https://skin-care-frontend-ecru.vercel.app/admin/products`,
           { reply_markup: ADMIN_KEYBOARD },
         );
@@ -1021,6 +1433,7 @@ export class TelegramUpdate {
 
       case '🚪 Logout':
         this.adminSessions.delete(chatId);
+        this.catalogSessions.delete(chatId);
         await ctx.reply(`👋 You have been logged out of admin mode.`, {
           reply_markup: USER_KEYBOARD,
         });

@@ -151,3 +151,36 @@ export class OrderSessionStore {
     return this.sessions.has(chatId);
   }
 }
+
+// ─── Catalog browse (search / category pagination) ─────────────────────────
+
+export type CatalogBrowseStep = 'awaiting_search' | 'browsing';
+
+export interface CatalogBrowseSession {
+  step: CatalogBrowseStep;
+  /** Last search query (for pagination callbacks) */
+  searchQuery?: string;
+  /** Last category filter (for pagination callbacks) */
+  categoryId?: string;
+  categoryName?: string;
+}
+
+export class CatalogBrowseSessionStore {
+  private readonly sessions = new Map<string, CatalogBrowseSession>();
+
+  get(chatId: string): CatalogBrowseSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  set(chatId: string, session: CatalogBrowseSession): void {
+    this.sessions.set(chatId, session);
+  }
+
+  delete(chatId: string): void {
+    this.sessions.delete(chatId);
+  }
+
+  has(chatId: string): boolean {
+    return this.sessions.has(chatId);
+  }
+}

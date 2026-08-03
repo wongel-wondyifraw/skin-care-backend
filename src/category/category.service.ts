@@ -18,6 +18,23 @@ export class CategoryService {
     return this.repo.find({ order: { name: 'ASC' } });
   }
 
+  /** Categories that have at least one product assigned. */
+  findWithProducts(): Promise<Category[]> {
+    return this.repo
+      .createQueryBuilder('c')
+      .where((qb) => {
+        const sub = qb
+          .subQuery()
+          .select('1')
+          .from('products', 'p')
+          .where('p."categoryId" = c.id')
+          .getQuery();
+        return `EXISTS ${sub}`;
+      })
+      .orderBy('c.name', 'ASC')
+      .getMany();
+  }
+
   async findOne(id: string): Promise<Category> {
     const cat = await this.repo.findOne({ where: { id } });
     if (!cat) throw new NotFoundException(`Category ${id} not found`);
