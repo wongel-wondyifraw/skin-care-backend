@@ -6,7 +6,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { DataSource, Repository } from 'typeorm';
 import { Order, OrderStatus } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
@@ -32,6 +32,7 @@ export class OrderService {
     private readonly orderRepository: Repository<Order>,
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
+    private readonly dataSource: DataSource,
     @Inject(forwardRef(() => TelegramService))
     private readonly telegramService: TelegramService,
   ) {}
@@ -99,21 +100,41 @@ export class OrderService {
       throw new BadRequestException('Quantity must be at least 1');
     }
 
-    const order = this.orderRepository.create({
-      customerId: data.customerId,
-      productId: data.productId,
-      cost: data.cost,
-      quantity,
-      deliveryAddress: data.deliveryAddress?.trim() || null,
-      status: data.status ?? 'pending',
+    const savedId = await this.dataSource.transaction(async (em) => {
+      const reserved = await em
+        .createQueryBuilder()
+        .update(Product)
+        .set({ stock: () => `stock - ${quantity}` })
+        .where('id = :id AND stock >= :qty', {
+          id: data.productId,
+          qty: quantity,
+        })
+        .execute();
+
+      if (!reserved.affected) {
+        throw new BadRequestException('Insufficient stock');
+      }
+
+      const order = em.create(Order, {
+        customerId: data.customerId,
+        productId: data.productId,
+        cost: data.cost,
+        quantity,
+        deliveryAddress: data.deliveryAddress?.trim() || null,
+        status: data.status ?? 'pending',
+        stockReserved: true,
+      });
+      const saved = await em.save(order);
+      return saved.id;
     });
-    const saved = await this.orderRepository.save(order);
-    return this.findOne(saved.id);
+
+    return this.findOne(savedId);
   }
 
   /**
-   * pending → delivered: subtract order.quantity from product stock + notify customer
-   * pending → cancelled: no stock change
+   * Stock is reserved on create.
+   * pending → delivered: keep reservation, notify customer (non-blocking)
+   * pending → cancelled: restore reserved stock
    */
   async updateStatus(id: string, status: OrderStatus): Promise<Order> {
     if (status !== 'delivered' && status !== 'cancelled') {
@@ -127,18 +148,26 @@ export class OrderService {
       );
     }
 
-    if (status === 'delivered') {
-      const product = await this.productRepository.findOne({
-        where: { id: order.productId },
-      });
-      if (!product) {
-        throw new NotFoundException(
-          `Product for order ${id} was not found`,
-        );
+    const qty = Math.max(1, order.quantity ?? 1);
+
+    if (status === 'cancelled' && order.stockReserved) {
+      await this.productRepository.increment(
+        { id: order.productId },
+        'stock',
+        qty,
+      );
+    }
+
+    if (status === 'delivered' && !order.stockReserved) {
+      const deducted = await this.productRepository
+        .createQueryBuilder()
+        .update(Product)
+        .set({ stock: () => `GREATEST(stock - ${qty}, 0)` })
+        .where('id = :id', { id: order.productId })
+        .execute();
+      if (!deducted.affected) {
+        throw new NotFoundException(`Product for order ${id} was not found`);
       }
-      const qty = Math.max(1, order.quantity ?? 1);
-      product.stock = Math.max(0, (product.stock ?? 0) - qty);
-      await this.productRepository.save(product);
     }
 
     order.status = status;
@@ -146,7 +175,7 @@ export class OrderService {
     const updated = await this.findOne(id);
 
     if (status === 'delivered') {
-      await this.notifyCustomerDelivered(updated);
+      void this.notifyCustomerDelivered(updated);
     }
 
     return updated;
@@ -174,10 +203,18 @@ export class OrderService {
   }
 
   async remove(id: string): Promise<void> {
-    const result = await this.orderRepository.delete(id);
-    if (result.affected === 0) {
+    const order = await this.orderRepository.findOne({ where: { id } });
+    if (!order) {
       throw new NotFoundException(`Order with ID ${id} not found`);
     }
+    if (order.status === 'pending' && order.stockReserved) {
+      await this.productRepository.increment(
+        { id: order.productId },
+        'stock',
+        Math.max(1, order.quantity ?? 1),
+      );
+    }
+    await this.orderRepository.delete(id);
   }
 
   async count(): Promise<number> {

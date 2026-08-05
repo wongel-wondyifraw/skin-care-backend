@@ -47,6 +47,10 @@ export class Order {
   @Column({ type: 'varchar', length: 20, default: 'pending' })
   status: OrderStatus;
 
+  /** True when stock was decremented at order create time. */
+  @Column({ type: 'boolean', default: false })
+  stockReserved: boolean;
+
   @Index()
   @CreateDateColumn()
   createdAt: Date;

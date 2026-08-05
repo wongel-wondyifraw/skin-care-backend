@@ -26,6 +26,7 @@ import {
 } from './registration.session.js';
 
 const CATALOG_PAGE_SIZE = 8;
+const MAX_PRODUCT_CARDS = 3;
 
 // ─── Persistent admin keyboard shown at the bottom of the chat ──────────────
 const ADMIN_KEYBOARD = {
@@ -187,7 +188,7 @@ export class TelegramUpdate {
     );
 
     try {
-      const allProducts = await this.productService.findAll();
+      const allProducts = await this.productService.findCatalogForAdvice();
 
       if (allProducts.length === 0) {
         await ctx.reply(
@@ -288,8 +289,9 @@ export class TelegramUpdate {
         `🛍️ Here are the products recommended for you:`,
       );
 
-      for (let i = 0; i < recommendedProducts.length; i++) {
-        const product = recommendedProducts[i];
+      const cards = recommendedProducts.slice(0, MAX_PRODUCT_CARDS);
+      for (let i = 0; i < cards.length; i++) {
+        const product = cards[i];
         const price =
           product.price != null
             ? `${Number(product.price).toFixed(2)} ETB`
@@ -312,7 +314,7 @@ export class TelegramUpdate {
         await this.sendProductPhotoCard(ctx, product, caption, inlineKeyboard);
 
         // Brief pause so Telegram reliably accepts consecutive photo uploads
-        if (i < recommendedProducts.length - 1) {
+        if (i < cards.length - 1) {
           await new Promise((resolve) => setTimeout(resolve, 450));
         }
       }
@@ -1149,7 +1151,7 @@ export class TelegramUpdate {
           : 'image/jpeg';
 
       const customer = await this.customerService.findOne(session.customerId);
-      const allProducts = await this.productService.findAll();
+      const allProducts = await this.productService.findCatalogForAdvice();
       const userSkinType = customer.skinType?.name || null;
 
       let filteredProducts = allProducts;
@@ -1221,8 +1223,9 @@ export class TelegramUpdate {
 
       if (analysis.mentionedProducts.length > 0) {
         await ctx.reply(`🛍️ Suggested products from our catalog:`);
-        for (let i = 0; i < analysis.mentionedProducts.length; i++) {
-          const product = analysis.mentionedProducts[i];
+        const cards = analysis.mentionedProducts.slice(0, MAX_PRODUCT_CARDS);
+        for (let i = 0; i < cards.length; i++) {
+          const product = cards[i];
           const price =
             product.price != null
               ? `${Number(product.price).toFixed(2)} ETB`
@@ -1233,7 +1236,7 @@ export class TelegramUpdate {
             `🌿 ${product.name}\n💰 ${price}`,
             this.productOrderMarkup(product),
           );
-          if (i < analysis.mentionedProducts.length - 1) {
+          if (i < cards.length - 1) {
             await new Promise((resolve) => setTimeout(resolve, 450));
           }
         }
@@ -1378,10 +1381,10 @@ export class TelegramUpdate {
       this.orderSessions.delete(chatId);
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to create order: ${msg}`);
-      await ctx.reply(
-        `Sorry, we couldn't place your order. Please try again.`,
-        { reply_markup: USER_KEYBOARD },
-      );
+      const userMsg = /insufficient stock/i.test(msg)
+        ? `Sorry, that quantity is no longer available. Please try again with a smaller quantity.`
+        : `Sorry, we couldn't place your order. Please try again.`;
+      await ctx.reply(userMsg, { reply_markup: USER_KEYBOARD });
     }
   }
 
@@ -1710,22 +1713,23 @@ export class TelegramUpdate {
   }
 
   private async handleCustomersAction(ctx: Context) {
-    const customers = await this.customerService.findAll();
+    const { items, total } = await this.customerService.findPage({
+      page: 1,
+      pageSize: 20,
+    });
 
-    if (customers.length === 0) {
+    if (total === 0) {
       await ctx.reply(`👥 No registered customers yet.`, {
         reply_markup: ADMIN_KEYBOARD,
       });
       return;
     }
 
-    const summary = customers
-      .slice(0, 20)
+    const summary = items
       .map((c, i) => `${i + 1}. ${c.fullName} — ${c.phone}`)
       .join('\n');
 
-    const total = customers.length;
-    const note = total > 20 ? `\n\n...and ${total - 20} more.` : '';
+    const note = total > items.length ? `\n\n...and ${total - items.length} more.` : '';
 
     await ctx.reply(
       `👥 Registered Customers (${total} total)\n\n${summary}${note}`,

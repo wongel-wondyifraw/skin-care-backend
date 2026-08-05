@@ -34,19 +34,11 @@ export class CustomerController {
     @Query('pageSize') pageSize?: string,
     @Query('search') search?: string,
   ) {
-    if (
-      page !== undefined ||
-      pageSize !== undefined ||
-      search !== undefined
-    ) {
-      return this.customerService.findPage({
-        page: page ? Number(page) : undefined,
-        pageSize: pageSize ? Number(pageSize) : undefined,
-        search,
-      });
-    }
-
-    return this.customerService.findAll();
+    return this.customerService.findPage({
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      search,
+    });
   }
 
   @Get(':id/messages')

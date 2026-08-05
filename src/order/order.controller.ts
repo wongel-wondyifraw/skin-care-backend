@@ -28,21 +28,12 @@ export class OrderController {
     @Query('search') search?: string,
     @Query('status') status?: OrderStatus | 'all',
   ) {
-    if (
-      page !== undefined ||
-      pageSize !== undefined ||
-      search !== undefined ||
-      status !== undefined
-    ) {
-      return this.orderService.findPage({
-        page: page ? Number(page) : undefined,
-        pageSize: pageSize ? Number(pageSize) : undefined,
-        search,
-        status,
-      });
-    }
-
-    return this.orderService.findAll();
+    return this.orderService.findPage({
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      search,
+      status,
+    });
   }
 
   @Get(':id')

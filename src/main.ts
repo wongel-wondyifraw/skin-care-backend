@@ -1,22 +1,35 @@
+import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
-import { AppModule } from './app.module.js';
-import { TelegramWebhookService } from './telegram/telegram-webhook.service.js';
-import { GlobalHttpExceptionFilter } from './common/http-exception.filter.js';
 import cookieParser from 'cookie-parser';
+import helmet from 'helmet';
+import { AppModule } from './app.module.js';
+import { GlobalHttpExceptionFilter } from './common/http-exception.filter.js';
+import { TelegramWebhookService } from './telegram/telegram-webhook.service.js';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.useGlobalFilters(new GlobalHttpExceptionFilter());
+  app.use(helmet());
   app.use(cookieParser());
 
+  const origins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
   app.enableCors({
-    origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+    origin: origins.length === 1 ? origins[0] : origins,
     credentials: true,
   });
 
-  // Global prefix so all routes live under /api
-  app.setGlobalPrefix('api');
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+    }),
+  );
+
+  app.setGlobalPrefix('api', { exclude: ['health'] });
 
   // Mount the Telegraf webhook middleware BEFORE listen() so Express registers
   // the route before any requests arrive. In polling mode this is a no-op.

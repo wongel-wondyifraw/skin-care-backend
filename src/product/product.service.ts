@@ -155,13 +155,31 @@ export class ProductService implements OnModuleInit {
       qb.andWhere('product.stock > 0');
     }
 
-    const [items, total] = await qb.getManyAndCount();
+    const items = await qb.getMany();
+    const total = await qb
+      .clone()
+      .skip(undefined as never)
+      .take(undefined as never)
+      .orderBy()
+      .select('product.id')
+      .distinct(true)
+      .getCount();
+
     return {
       items: items.map((p) => this.hydrateLegacySkinTypes(p)),
       total,
       page,
       pageSize,
     };
+  }
+
+  async findCatalogForAdvice(limit = 100): Promise<Product[]> {
+    const products = await this.productRepository.find({
+      relations: { category: true, skinType: true, skinTypes: true },
+      order: { name: 'ASC' },
+      take: Math.min(150, Math.max(1, limit)),
+    });
+    return products.map((p) => this.hydrateLegacySkinTypes(p));
   }
 
   private async findHydratedById(id: string): Promise<Product> {

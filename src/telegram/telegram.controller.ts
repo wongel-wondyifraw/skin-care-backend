@@ -1,4 +1,11 @@
-import { Controller, Post, Body, BadRequestException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Body,
+  Controller,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import { TelegramService } from './telegram.service.js';
 
 /**
@@ -6,6 +13,7 @@ import { TelegramService } from './telegram.service.js';
  * The inbound webhook (user → bot) is handled by TelegramUpdate via Telegraf,
  * NOT by a controller — Telegraf owns that route.
  */
+@UseGuards(JwtAuthGuard)
 @Controller('telegram')
 export class TelegramController {
   constructor(private readonly telegramService: TelegramService) {}

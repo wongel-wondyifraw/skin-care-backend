@@ -29,27 +29,15 @@ export class ProductController {
     @Query('stock') stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock',
     @Query('sort') sort?: 'name' | 'recent',
   ) {
-    if (
-      page !== undefined ||
-      pageSize !== undefined ||
-      search !== undefined ||
-      categoryId !== undefined ||
-      skinTypeId !== undefined ||
-      stock !== undefined ||
-      sort !== undefined
-    ) {
-      return this.productService.findPage({
-        page: page ? Number(page) : undefined,
-        pageSize: pageSize ? Number(pageSize) : undefined,
-        search,
-        categoryId,
-        skinTypeId,
-        stock,
-        sort,
-      });
-    }
-
-    return this.productService.findAll();
+    return this.productService.findPage({
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      search,
+      categoryId,
+      skinTypeId,
+      stock,
+      sort,
+    });
   }
 
   @Get(':id')

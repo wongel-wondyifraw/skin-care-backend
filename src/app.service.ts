@@ -22,8 +22,8 @@ export class AppService {
     private readonly orderRepository: Repository<Order>,
   ) {}
 
-  getHello(): string {
-    return 'Hello World!';
+  getHealth() {
+    return { status: 'ok', uptime: process.uptime() };
   }
 
   async getDashboardSummary() {
