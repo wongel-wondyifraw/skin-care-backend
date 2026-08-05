@@ -184,3 +184,30 @@ export class CatalogBrowseSessionStore {
     return this.sessions.has(chatId);
   }
 }
+
+// ─── Facial scan ───────────────────────────────────────────────────────────
+
+export interface ScanSession {
+  step: 'awaiting_scan_photo';
+  customerId: string;
+}
+
+export class ScanSessionStore {
+  private readonly sessions = new Map<string, ScanSession>();
+
+  get(chatId: string): ScanSession | undefined {
+    return this.sessions.get(chatId);
+  }
+
+  set(chatId: string, session: ScanSession): void {
+    this.sessions.set(chatId, session);
+  }
+
+  delete(chatId: string): void {
+    this.sessions.delete(chatId);
+  }
+
+  has(chatId: string): boolean {
+    return this.sessions.has(chatId);
+  }
+}

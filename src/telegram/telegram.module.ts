@@ -10,15 +10,19 @@ import { SkinTypeModule } from '../skin-type/skin-type.module.js';
 import { ProductModule } from '../product/product.module.js';
 import { CategoryModule } from '../category/category.module.js';
 import { OrderModule } from '../order/order.module.js';
+import { UploadModule } from '../upload/upload.module.js';
+import { SkinAnalysisModule } from '../skin-analysis/skin-analysis.module.js';
 import { GeminiService } from './gemini.service.js';
 
 @Module({
   imports: [
     ConfigModule,
-    CustomerModule,
+    forwardRef(() => CustomerModule),
     SkinTypeModule,
     ProductModule,
     CategoryModule,
+    UploadModule,
+    SkinAnalysisModule,
     forwardRef(() => OrderModule),
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
@@ -46,6 +50,6 @@ import { GeminiService } from './gemini.service.js';
   ],
   providers: [TelegramService, TelegramWebhookService, TelegramUpdate, GeminiService],
   controllers: [TelegramController],
-  exports: [TelegramService, TelegramWebhookService],
+  exports: [TelegramService, TelegramWebhookService, GeminiService],
 })
 export class TelegramModule {}

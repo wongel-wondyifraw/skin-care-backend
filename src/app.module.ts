@@ -8,6 +8,8 @@ import { SkinType } from './skin-type/skin-type.entity.js';
 import { Category } from './category/category.entity.js';
 import { Product } from './product/product.entity.js';
 import { Customer } from './customer/customer.entity.js';
+import { CustomerMessage } from './customer/customer-message.entity.js';
+import { SkinAnalysis } from './skin-analysis/skin-analysis.entity.js';
 import { Order } from './order/order.entity.js';
 import { AdminUserModule } from './admin-user/admin-user.module.js';
 import { AuthModule } from './auth/auth.module.js';
@@ -18,12 +20,22 @@ import { ProductModule } from './product/product.module.js';
 import { UploadModule } from './upload/upload.module.js';
 import { TelegramModule } from './telegram/telegram.module.js';
 import { CustomerModule } from './customer/customer.module.js';
+import { SkinAnalysisModule } from './skin-analysis/skin-analysis.module.js';
 import { OrderModule } from './order/order.module.js';
 
 @Module({
   imports: [
     ConfigModule.forRoot({ isGlobal: true }),
-    TypeOrmModule.forFeature([AdminUser, SkinType, Category, Product, Customer, Order]),
+    TypeOrmModule.forFeature([
+      AdminUser,
+      SkinType,
+      Category,
+      Product,
+      Customer,
+      CustomerMessage,
+      SkinAnalysis,
+      Order,
+    ]),
 
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
@@ -37,7 +49,16 @@ import { OrderModule } from './order/order.module.js';
           return {
             type: 'postgres',
             url: databaseUrl,
-            entities: [AdminUser, SkinType, Category, Product, Customer, Order],
+            entities: [
+              AdminUser,
+              SkinType,
+              Category,
+              Product,
+              Customer,
+              CustomerMessage,
+              SkinAnalysis,
+              Order,
+            ],
             synchronize: true,
             ssl: { rejectUnauthorized: false },
             // pgbouncer transaction mode does not support prepared statements
@@ -53,7 +74,16 @@ import { OrderModule } from './order/order.module.js';
           username: config.get<string>('DB_USERNAME', 'postgres'),
           password: config.get<string>('DB_PASSWORD', 'postgres'),
           database: config.get<string>('DB_NAME', 'medaf_skincare'),
-          entities: [AdminUser, SkinType, Category, Product, Customer, Order],
+          entities: [
+            AdminUser,
+            SkinType,
+            Category,
+            Product,
+            Customer,
+            CustomerMessage,
+            SkinAnalysis,
+            Order,
+          ],
           synchronize: true,
         };
       },
@@ -68,6 +98,7 @@ import { OrderModule } from './order/order.module.js';
     UploadModule,
     TelegramModule,
     CustomerModule,
+    SkinAnalysisModule,
     OrderModule,
   ],
   controllers: [AppController],

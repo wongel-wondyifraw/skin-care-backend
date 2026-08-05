@@ -42,6 +42,15 @@ export class CustomerService {
     });
   }
 
+  async findOne(id: string): Promise<Customer> {
+    const customer = await this.repo.findOne({
+      where: { id },
+      relations: { skinType: true },
+    });
+    if (!customer) throw new NotFoundException(`Customer ${id} not found`);
+    return customer;
+  }
+
   /** Returns all registered customers — used by the admin bot menu. */
   findAll(): Promise<Customer[]> {
     return this.repo.find({

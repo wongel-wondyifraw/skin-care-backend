@@ -43,4 +43,34 @@ export class CloudinaryService {
       streamifier.createReadStream(file.buffer).pipe(uploadStream);
     });
   }
+
+  uploadBuffer(
+    buffer: Buffer,
+    options?: { folder?: string; filename?: string },
+  ): Promise<UploadApiResponse> {
+    return new Promise((resolve, reject) => {
+      if (!buffer?.length) {
+        return reject(new BadRequestException('No image buffer provided'));
+      }
+
+      const uploadStream = cloudinary.uploader.upload_stream(
+        {
+          folder: options?.folder ?? 'medaf_skincare_scans',
+          filename_override: options?.filename,
+        },
+        (uploadError, result) => {
+          if (uploadError ?? !result) {
+            return reject(
+              uploadError instanceof Error
+                ? uploadError
+                : new Error('Upload failed or result is undefined'),
+            );
+          }
+          resolve(result);
+        },
+      );
+
+      streamifier.createReadStream(buffer).pipe(uploadStream);
+    });
+  }
 }

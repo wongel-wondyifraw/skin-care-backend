@@ -9,6 +9,9 @@ import { ProductService } from '../product/product.service.js';
 import { CategoryService } from '../category/category.service.js';
 import { OrderService } from '../order/order.service.js';
 import { GeminiService } from './gemini.service.js';
+import { CloudinaryService } from '../upload/cloudinary.service.js';
+import { SkinAnalysisService } from '../skin-analysis/skin-analysis.service.js';
+import { CustomerMessageService } from '../customer/customer-message.service.js';
 import {
   AdminSessionStore,
   CatalogBrowseSession,
@@ -19,6 +22,7 @@ import {
   ProfileEditSessionStore,
   RegistrationSession,
   RegistrationSessionStore,
+  ScanSessionStore,
 } from './registration.session.js';
 
 const CATALOG_PAGE_SIZE = 8;
@@ -27,9 +31,10 @@ const CATALOG_PAGE_SIZE = 8;
 const ADMIN_KEYBOARD = {
   keyboard: [
     [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
-    [{ text: '📦 Products' }, { text: '👥 Customers' }],
-    [{ text: '🛒 Orders' }, { text: '🌐 Web Catalog' }],
-    [{ text: '⚙️ Settings' }, { text: '🚪 Logout' }],
+    [{ text: '🔍 Scan Face' }, { text: '📦 Products' }],
+    [{ text: '👥 Customers' }, { text: '🛒 Orders' }],
+    [{ text: '🌐 Web Catalog' }, { text: '⚙️ Settings' }],
+    [{ text: '🚪 Logout' }],
   ],
   resize_keyboard: true,
 };
@@ -38,7 +43,7 @@ const ADMIN_KEYBOARD = {
 const USER_KEYBOARD = {
   keyboard: [
     [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
-    [{ text: '📦 Products' }],
+    [{ text: '🔍 Scan Face' }, { text: '📦 Products' }],
   ],
   resize_keyboard: true,
 };
@@ -60,6 +65,7 @@ export class TelegramUpdate {
   private readonly profileEditSessions = new ProfileEditSessionStore();
   private readonly orderSessions = new OrderSessionStore();
   private readonly catalogSessions = new CatalogBrowseSessionStore();
+  private readonly scanSessions = new ScanSessionStore();
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
@@ -68,6 +74,9 @@ export class TelegramUpdate {
     private readonly categoryService: CategoryService,
     private readonly orderService: OrderService,
     private readonly geminiService: GeminiService,
+    private readonly cloudinaryService: CloudinaryService,
+    private readonly skinAnalysisService: SkinAnalysisService,
+    private readonly customerMessageService: CustomerMessageService,
     private readonly config: ConfigService,
   ) {}
 
@@ -884,11 +893,45 @@ export class TelegramUpdate {
       return;
     }
 
+    // ── Facial scan photo ────────────────────────────────────────
+    if (this.scanSessions.has(chatId) && this.isPhotoMessage(ctx)) {
+      await this.handleScanPhoto(ctx, chatId);
+      return;
+    }
+
     // ── Order flow (quantity → address) ──────────────────────────
     const orderSession = this.orderSessions.get(chatId);
     if (orderSession) {
       await this.handleOrderFlow(ctx, chatId, orderSession, text);
       return;
+    }
+
+    if (this.scanSessions.has(chatId)) {
+      if (
+        text === '◀️ Back' ||
+        text === '👤 Profile' ||
+        text === '💡 Get Advice' ||
+        text === '📦 Products' ||
+        text === '🔍 Scan Face'
+      ) {
+        this.scanSessions.delete(chatId);
+      } else if (!text) {
+        await ctx.reply(
+          `Please send a clear face photo, or tap ◀️ Back to cancel.`,
+          {
+            reply_markup: {
+              keyboard: [[{ text: '◀️ Back' }]],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      } else {
+        await ctx.reply(
+          `Send a photo of your face (not text), or tap ◀️ Back to cancel.`,
+        );
+        return;
+      }
     }
 
     // ── Product search query ─────────────────────────────────────
@@ -931,7 +974,14 @@ export class TelegramUpdate {
     // ── "💡 Get Advice" button press (always available) ──────────
     if (text === '💡 Get Advice') {
       this.catalogSessions.delete(chatId);
+      this.scanSessions.delete(chatId);
       await this.handleGetAdvice(ctx, chatId);
+      return;
+    }
+
+    if (text === '🔍 Scan Face') {
+      this.catalogSessions.delete(chatId);
+      await this.startFaceScan(ctx, chatId);
       return;
     }
 
@@ -961,6 +1011,7 @@ export class TelegramUpdate {
 
     if (text === '◀️ Back') {
       this.catalogSessions.delete(chatId);
+      this.scanSessions.delete(chatId);
       const replyMarkup = this.adminSessions.isAuthenticated(chatId)
         ? ADMIN_KEYBOARD
         : USER_KEYBOARD;
@@ -976,26 +1027,238 @@ export class TelegramUpdate {
 
     // ── Registration flow ────────────────────────────────────────
     const session = this.sessions.get(chatId);
+    if (session) {
+      switch (session.step) {
+        case 'awaiting_name':
+          await this.handleName(ctx, chatId, session, message);
+          break;
+        case 'awaiting_username':
+          await this.handleUsername(ctx, chatId, session, message);
+          break;
+        case 'awaiting_phone':
+          await this.handlePhone(ctx, chatId, session, message);
+          break;
+        case 'awaiting_skin_type':
+          await this.handleSkinType(ctx, chatId, session, message);
+          break;
+        case 'awaiting_address':
+          await this.handleAddress(ctx, chatId, session, message);
+          break;
+        default:
+          break;
+      }
+      return;
+    }
+
+    if (text && !this.isKnownKeyboardLabel(text)) {
+      const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+      if (customer) {
+        try {
+          await this.customerMessageService.recordInbound(customer.id, text);
+          await ctx.reply(
+            `Thanks — our team received your message and will reply here soon.`,
+            { reply_markup: USER_KEYBOARD },
+          );
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.logger.warn(`Failed to store inbound message: ${msg}`);
+        }
+      }
+    }
+    return;
+  }
+
+  private isPhotoMessage(ctx: Context): boolean {
+    const msg = ctx.message as Message.PhotoMessage | undefined;
+    return Boolean(msg && 'photo' in msg && msg.photo?.length);
+  }
+
+  private isKnownKeyboardLabel(text: string): boolean {
+    return [
+      '👤 Profile',
+      '💡 Get Advice',
+      '🔍 Scan Face',
+      '📦 Products',
+      '✨ Recommended',
+      '📂 Categories',
+      '🔍 Search Product',
+      '◀️ Back',
+      '👥 Customers',
+      '🛒 Orders',
+      '🌐 Web Catalog',
+      '⚙️ Settings',
+      '🚪 Logout',
+      '❌ Cancel order',
+      'Skip',
+    ].includes(text);
+  }
+
+  private async startFaceScan(ctx: Context, chatId: string) {
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.reply(
+        `Please complete your registration first by sending /start.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    this.scanSessions.set(chatId, {
+      step: 'awaiting_scan_photo',
+      customerId: customer.id,
+    });
+
+    await ctx.reply(
+      `🔍 Scan Face\n\n` +
+        `Send a clear, front-facing photo of your face in good light.\n` +
+        `One face only — no heavy filters.\n\n` +
+        `This is not a medical diagnosis.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: '◀️ Back' }]],
+          resize_keyboard: true,
+        },
+      },
+    );
+  }
+
+  private async handleScanPhoto(ctx: Context, chatId: string) {
+    const session = this.scanSessions.get(chatId);
     if (!session) return;
 
-    switch (session.step) {
-      case 'awaiting_name':
-        await this.handleName(ctx, chatId, session, message);
-        break;
-      case 'awaiting_username':
-        await this.handleUsername(ctx, chatId, session, message);
-        break;
-      case 'awaiting_phone':
-        await this.handlePhone(ctx, chatId, session, message);
-        break;
-      case 'awaiting_skin_type':
-        await this.handleSkinType(ctx, chatId, session, message);
-        break;
-      case 'awaiting_address':
-        await this.handleAddress(ctx, chatId, session, message);
-        break;
-      default:
-        break;
+    const msg = ctx.message as Message.PhotoMessage;
+    const best = msg.photo[msg.photo.length - 1];
+
+    await ctx.reply(`⏳ Looking at your photo… this may take a few seconds.`);
+
+    try {
+      const fileLink = await ctx.telegram.getFileLink(best.file_id);
+      const res = await fetch(fileLink.href, {
+        headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) throw new Error(`Telegram file HTTP ${res.status}`);
+      const buffer = Buffer.from(await res.arrayBuffer());
+      if (!buffer.length) throw new Error('Empty photo');
+
+      const path = fileLink.pathname.toLowerCase();
+      const mimeType = path.endsWith('.png')
+        ? 'image/png'
+        : path.endsWith('.webp')
+          ? 'image/webp'
+          : 'image/jpeg';
+
+      const customer = await this.customerService.findOne(session.customerId);
+      const allProducts = await this.productService.findAll();
+      const userSkinType = customer.skinType?.name || null;
+
+      let filteredProducts = allProducts;
+      if (userSkinType && userSkinType.toLowerCase() !== 'all') {
+        const target = userSkinType.toLowerCase();
+        filteredProducts = allProducts.filter((p) => {
+          const skins =
+            p.skinTypes?.length ? p.skinTypes : p.skinType ? [p.skinType] : [];
+          if (skins.length === 0) return true;
+          return skins.some((s) => {
+            const name = (s.name || 'All').toLowerCase();
+            return name === target || name === 'all';
+          });
+        });
+      }
+
+      const analysis = await this.geminiService.analyzeFaceScan({
+        imageBuffer: buffer,
+        mimeType,
+        userSkinType,
+        products: filteredProducts,
+      });
+
+      if (!analysis.usable) {
+        await ctx.reply(
+          analysis.retryMessage ||
+            `Please send a clearer front-facing photo in good light — one face, no heavy filter.`,
+          {
+            reply_markup: {
+              keyboard: [[{ text: '◀️ Back' }]],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      const uploaded = await this.cloudinaryService.uploadBuffer(buffer, {
+        folder: 'medaf_skincare_scans',
+        filename: `scan-${customer.id}`,
+      });
+
+      await this.skinAnalysisService.create({
+        customerId: customer.id,
+        imageUrl: uploaded.secure_url,
+        assetId: uploaded.asset_id || uploaded.public_id,
+        adviceText: analysis.text,
+        mentionedProductIds: analysis.mentionedProducts.map((p) => p.id),
+      });
+
+      this.scanSessions.delete(chatId);
+
+      const maxLength = 4000;
+      if (analysis.text.length <= maxLength) {
+        await ctx.reply(analysis.text);
+      } else {
+        let remaining = analysis.text;
+        while (remaining.length > 0) {
+          if (remaining.length <= maxLength) {
+            await ctx.reply(remaining);
+            break;
+          }
+          let splitAt = remaining.lastIndexOf('\n', maxLength);
+          if (splitAt === -1 || splitAt < maxLength / 2) splitAt = maxLength;
+          await ctx.reply(remaining.substring(0, splitAt));
+          remaining = remaining.substring(splitAt).trim();
+        }
+      }
+
+      if (analysis.mentionedProducts.length > 0) {
+        await ctx.reply(`🛍️ Suggested products from our catalog:`);
+        for (let i = 0; i < analysis.mentionedProducts.length; i++) {
+          const product = analysis.mentionedProducts[i];
+          const price =
+            product.price != null
+              ? `${Number(product.price).toFixed(2)} ETB`
+              : 'Price not set';
+          await this.sendProductPhotoCard(
+            ctx,
+            product,
+            `🌿 ${product.name}\n💰 ${price}`,
+            this.productOrderMarkup(product),
+          );
+          if (i < analysis.mentionedProducts.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 450));
+          }
+        }
+      }
+
+      await ctx.reply(
+        `This is observational advice only — not a medical diagnosis.`,
+        {
+          reply_markup: this.adminSessions.isAuthenticated(chatId)
+            ? ADMIN_KEYBOARD
+            : USER_KEYBOARD,
+        },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Face scan failed for chatId=${chatId}: ${msg}`);
+      await ctx.reply(
+        `Sorry, we could not analyze that photo. Please try again with a clearer image.`,
+        {
+          reply_markup: {
+            keyboard: [[{ text: '◀️ Back' }]],
+            resize_keyboard: true,
+          },
+        },
+      );
     }
   }
 
@@ -1434,6 +1697,7 @@ export class TelegramUpdate {
       case '🚪 Logout':
         this.adminSessions.delete(chatId);
         this.catalogSessions.delete(chatId);
+        this.scanSessions.delete(chatId);
         await ctx.reply(`👋 You have been logged out of admin mode.`, {
           reply_markup: USER_KEYBOARD,
         });
