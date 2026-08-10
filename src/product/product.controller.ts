@@ -10,9 +10,31 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { Type } from 'class-transformer';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsNumber,
+  IsUUID,
+  Max,
+  Min,
+} from 'class-validator';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ProductService } from './product.service';
 import type { ProductWriteInput } from './product.service';
+
+class BulkDiscountDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsUUID('4', { each: true })
+  productIds: string[];
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0)
+  @Max(100)
+  discountPercent: number;
+}
 
 @UseGuards(JwtAuthGuard)
 @Controller('products')
@@ -38,6 +60,14 @@ export class ProductController {
       stock,
       sort,
     });
+  }
+
+  @Patch('discounts')
+  setDiscounts(@Body() body: BulkDiscountDto) {
+    return this.productService.setDiscounts(
+      body.productIds,
+      body.discountPercent,
+    );
   }
 
   @Get(':id')

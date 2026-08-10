@@ -71,6 +71,10 @@ export class Product {
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   price: number;
 
+  /** 0–100. Sale price = price * (1 - discountPercent/100). */
+  @Column({ type: 'int', default: 0 })
+  discountPercent: number;
+
   @Index()
   @CreateDateColumn()
   createdAt: Date;

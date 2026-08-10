@@ -27,6 +27,7 @@ import { CategoryService } from '../category/category.service.js';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
 import { OrderService } from '../order/order.service.js';
 import { CustomerService } from '../customer/customer.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { CustomerJwtAuthGuard } from './customer-jwt-auth.guard.js';
 import { ShopAuthService } from './shop-auth.service.js';
 import { customerInitials } from './telegram-webapp.js';
@@ -79,6 +80,7 @@ export class ShopController {
     private readonly skinTypeService: SkinTypeService,
     private readonly orderService: OrderService,
     private readonly customerService: CustomerService,
+    private readonly settingsService: SettingsService,
   ) {}
 
   @Post('auth/telegram')
@@ -102,6 +104,24 @@ export class ShopController {
         ? { id: customer.skinType.id, name: customer.skinType.name }
         : null,
     };
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Get('trending')
+  async listTrending() {
+    const ids = await this.settingsService.getTrendingProductIds();
+    if (ids.length) {
+      const products = await this.productService.findByIdsOrdered(ids);
+      const inStock = products.filter((p) => (p.stock ?? 0) > 0 && p.image);
+      if (inStock.length) return inStock;
+    }
+    const fallback = await this.productService.findPage({
+      page: 1,
+      pageSize: 5,
+      sort: 'recent',
+      stock: 'in_stock',
+    });
+    return fallback.items.filter((p) => Boolean(p.image));
   }
 
   @UseGuards(CustomerJwtAuthGuard)

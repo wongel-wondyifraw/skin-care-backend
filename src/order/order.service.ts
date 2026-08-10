@@ -10,6 +10,7 @@ import { DataSource, Repository } from 'typeorm';
 import { Order, OrderStatus } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
+import { effectiveUnitPrice } from '../product/product-pricing.js';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -127,7 +128,7 @@ export class OrderService {
       const order = await this.create({
         customerId,
         productId: product.id,
-        cost: Number(product.price) || 0,
+        cost: effectiveUnitPrice(product.price, product.discountPercent),
         quantity,
         deliveryAddress: deliveryAddress ?? null,
       });

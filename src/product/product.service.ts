@@ -10,6 +10,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, ILike, In, Repository } from 'typeorm';
 import { Product } from './product.entity';
 import { SkinType } from '../skin-type/skin-type.entity';
+import { clampDiscountPercent } from './product-pricing';
 
 export interface PaginatedResult<T> {
   items: T[];
@@ -39,6 +40,7 @@ export type ProductWriteInput = {
   skinTypeIds?: string[];
   stock?: number;
   price?: number;
+  discountPercent?: number;
 };
 
 @Injectable()
@@ -59,6 +61,10 @@ export class ProductService implements OnModuleInit {
       await this.dataSource.query(`
         ALTER TABLE products
         ADD COLUMN IF NOT EXISTS brand character varying(120)
+      `);
+      await this.dataSource.query(`
+        ALTER TABLE products
+        ADD COLUMN IF NOT EXISTS "discountPercent" integer DEFAULT 0 NOT NULL
       `);
       await this.dataSource.query(`
         CREATE TABLE IF NOT EXISTS product_skin_types (
@@ -197,6 +203,36 @@ export class ProductService implements OnModuleInit {
     return this.findHydratedById(id);
   }
 
+  /** Resolve products by id, preserving the requested order. */
+  async findByIdsOrdered(ids: string[]): Promise<Product[]> {
+    if (!ids.length) return [];
+    const products = await this.productRepository.find({
+      where: { id: In(ids) },
+      relations: { category: true, skinType: true, skinTypes: true },
+    });
+    const byId = new Map(
+      products.map((p) => [p.id, this.hydrateLegacySkinTypes(p)]),
+    );
+    return ids
+      .map((id) => byId.get(id))
+      .filter((p): p is Product => Boolean(p));
+  }
+
+  async setDiscounts(
+    productIds: string[],
+    discountPercent: number,
+  ): Promise<{ updated: number; discountPercent: number }> {
+    if (!Array.isArray(productIds) || productIds.length === 0) {
+      throw new BadRequestException('Select at least one product');
+    }
+    const pct = clampDiscountPercent(discountPercent);
+    const result = await this.productRepository.update(
+      { id: In(productIds) },
+      { discountPercent: pct },
+    );
+    return { updated: result.affected ?? 0, discountPercent: pct };
+  }
+
   private async findOrCreateAllSkinType(): Promise<SkinType> {
     let allSkin = await this.skinTypeRepository.findOne({
       where: { name: 'All' },
@@ -262,6 +298,7 @@ export class ProductService implements OnModuleInit {
       categoryId: data.categoryId || null,
       stock: data.stock ?? 0,
       price: data.price ?? 0,
+      discountPercent: clampDiscountPercent(data.discountPercent ?? 0),
       skinTypes,
       skinTypeId: skinTypes[0]?.id ?? null,
     });
@@ -301,6 +338,9 @@ export class ProductService implements OnModuleInit {
     }
     if (data.stock !== undefined) product.stock = data.stock;
     if (data.price !== undefined) product.price = data.price;
+    if (data.discountPercent !== undefined) {
+      product.discountPercent = clampDiscountPercent(data.discountPercent);
+    }
 
     if (data.skinTypeIds !== undefined || data.skinTypeId !== undefined) {
       const skinTypes = await this.resolveSkinTypes(data);

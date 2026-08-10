@@ -12,6 +12,7 @@ import { GeminiService } from './gemini.service.js';
 import { CloudinaryService } from '../upload/cloudinary.service.js';
 import { SkinAnalysisService } from '../skin-analysis/skin-analysis.service.js';
 import { CustomerMessageService } from '../customer/customer-message.service.js';
+import { effectiveUnitPrice } from '../product/product-pricing.js';
 import {
   AdminSessionStore,
   CatalogBrowseSession,
@@ -495,7 +496,7 @@ export class TelegramUpdate {
       step: 'awaiting_quantity',
       productId: product.id,
       customerId: customer.id,
-      cost: Number(product.price) || 0,
+      cost: effectiveUnitPrice(product.price, product.discountPercent),
       productName: product.name,
       maxStock: product.stock,
     });
@@ -505,9 +506,16 @@ export class TelegramUpdate {
       [{ text: '❌ Cancel order' }],
     ];
 
+    const unit = effectiveUnitPrice(product.price, product.discountPercent);
+    const pct = Math.floor(Number(product.discountPercent) || 0);
+    const priceLine =
+      pct > 0
+        ? `💰 Sale: ${unit.toFixed(2)} ETB (−${pct}% off ${Number(product.price).toFixed(2)})\n`
+        : `💰 Unit price: ${unit.toFixed(2)} ETB\n`;
+
     await ctx.reply(
       `🛒 Ordering: ${product.name}\n` +
-        `💰 Unit price: ${Number(product.price).toFixed(2)} ETB\n` +
+        priceLine +
         `📦 In stock: ${product.stock}\n\n` +
         `How many would you like?\n` +
         `Tap 1–4, or type a number if you need more.`,
