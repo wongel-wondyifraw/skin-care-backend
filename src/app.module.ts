@@ -22,6 +22,7 @@ import { TelegramModule } from './telegram/telegram.module.js';
 import { CustomerModule } from './customer/customer.module.js';
 import { SkinAnalysisModule } from './skin-analysis/skin-analysis.module.js';
 import { OrderModule } from './order/order.module.js';
+import { ShopModule } from './shop/shop.module.js';
 
 @Module({
   imports: [
@@ -100,6 +101,7 @@ import { OrderModule } from './order/order.module.js';
     CustomerModule,
     SkinAnalysisModule,
     OrderModule,
+    ShopModule,
   ],
   controllers: [AppController],
   providers: [AppService],

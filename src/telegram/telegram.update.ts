@@ -422,12 +422,123 @@ export class TelegramUpdate {
     return `${trimmed.slice(0, max - 1)}…`;
   }
 
+  private shopWebAppUrl(): string | null {
+    const raw = (this.config.get<string>('SHOP_WEBAPP_URL') || '').trim();
+    if (!raw) return null;
+    return raw.replace(/\/+$/, '');
+  }
+
   private async showProductsMenu(ctx: Context, header?: string) {
+    const shopUrl = this.shopWebAppUrl();
+    if (shopUrl) {
+      await ctx.reply(
+        header ??
+          `📦 Products\n\nOpen the catalog to browse, search, and filter our products.`,
+        {
+          reply_markup: {
+            keyboard: [
+              [{ text: '🛍️ Open Catalog', web_app: { url: shopUrl } }],
+              [{ text: '✨ Recommended' }, { text: '◀️ Back' }],
+            ],
+            resize_keyboard: true,
+          },
+        },
+      );
+      return;
+    }
+
     await ctx.reply(
       header ??
         `📦 Products\n\nChoose how you'd like to browse:`,
       { reply_markup: PRODUCTS_KEYBOARD },
     );
+  }
+
+  /** Shared order kickoff used by inline Order buttons and Mini App sendData. */
+  private async startOrderForProduct(
+    ctx: Context,
+    chatId: string,
+    productId: string,
+  ) {
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.reply(
+        `Please register first with /start before placing an order.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    let product;
+    try {
+      product = await this.productService.findOne(productId);
+    } catch {
+      await ctx.reply(`Sorry, that product is no longer available.`, {
+        reply_markup: USER_KEYBOARD,
+      });
+      return;
+    }
+
+    if (product.stock <= 0) {
+      await ctx.reply(
+        `🔔 Thanks! We'll notify you when "${product.name}" is back in stock.`,
+        { reply_markup: USER_KEYBOARD },
+      );
+      return;
+    }
+
+    this.profileEditSessions.delete(chatId);
+    this.catalogSessions.delete(chatId);
+    this.orderSessions.set(chatId, {
+      step: 'awaiting_quantity',
+      productId: product.id,
+      customerId: customer.id,
+      cost: Number(product.price) || 0,
+      productName: product.name,
+      maxStock: product.stock,
+    });
+
+    const qtyButtons = [
+      [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
+      [{ text: '❌ Cancel order' }],
+    ];
+
+    await ctx.reply(
+      `🛒 Ordering: ${product.name}\n` +
+        `💰 Unit price: ${Number(product.price).toFixed(2)} ETB\n` +
+        `📦 In stock: ${product.stock}\n\n` +
+        `How many would you like?\n` +
+        `Tap 1–4, or type a number if you need more.`,
+      {
+        reply_markup: {
+          keyboard: qtyButtons,
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
+    );
+  }
+
+  private async handleWebAppData(ctx: Context, chatId: string, raw: string) {
+    try {
+      const payload = JSON.parse(raw) as {
+        action?: string;
+        productId?: string;
+      };
+      if (payload.action === 'order' && payload.productId) {
+        await this.startOrderForProduct(ctx, chatId, payload.productId);
+        return;
+      }
+      await ctx.reply(`Received catalog action, but nothing to do.`, {
+        reply_markup: USER_KEYBOARD,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Invalid web_app_data: ${msg}`);
+      await ctx.reply(`Could not process that catalog action. Please try again.`, {
+        reply_markup: USER_KEYBOARD,
+      });
+    }
   }
 
   private async sendProductCardById(ctx: Context, productId: string) {
@@ -778,63 +889,7 @@ export class TelegramUpdate {
     const productId = data.replace(/^order_/, '');
 
     await ctx.answerCbQuery();
-
-    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
-    if (!customer) {
-      await ctx.reply(
-        `Please register first with /start before placing an order.`,
-        { reply_markup: USER_KEYBOARD },
-      );
-      return;
-    }
-
-    let product;
-    try {
-      product = await this.productService.findOne(productId);
-    } catch {
-      await ctx.reply(`Sorry, that product is no longer available.`, {
-        reply_markup: USER_KEYBOARD,
-      });
-      return;
-    }
-
-    if (product.stock <= 0) {
-      await ctx.reply(
-        `🔔 Thanks! We'll notify you when "${product.name}" is back in stock.`,
-        { reply_markup: USER_KEYBOARD },
-      );
-      return;
-    }
-
-    this.profileEditSessions.delete(chatId);
-    this.orderSessions.set(chatId, {
-      step: 'awaiting_quantity',
-      productId: product.id,
-      customerId: customer.id,
-      cost: Number(product.price) || 0,
-      productName: product.name,
-      maxStock: product.stock,
-    });
-
-    const qtyButtons = [
-      [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
-      [{ text: '❌ Cancel order' }],
-    ];
-
-    await ctx.reply(
-      `🛒 Ordering: ${product.name}\n` +
-        `💰 Unit price: ${Number(product.price).toFixed(2)} ETB\n` +
-        `📦 In stock: ${product.stock}\n\n` +
-        `How many would you like?\n` +
-        `Tap 1–4, or type a number if you need more.`,
-      {
-        reply_markup: {
-          keyboard: qtyButtons,
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      },
-    );
+    await this.startOrderForProduct(ctx, chatId, productId);
   }
 
   // ─────────────────────────────────────────────
@@ -885,8 +940,16 @@ export class TelegramUpdate {
   @On('message')
   async onMessage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
-    const message = ctx.message as Message.TextMessage & Message.ContactMessage;
+    const message = ctx.message as Message.TextMessage &
+      Message.ContactMessage &
+      Message.WebAppDataMessage;
     const text = ('text' in message ? message.text : '').trim();
+
+    // ── Mini App sendData (order handoff) ────────────────────────
+    if ('web_app_data' in message && message.web_app_data?.data) {
+      await this.handleWebAppData(ctx, chatId, message.web_app_data.data);
+      return;
+    }
 
     // ── Admin password verification ──────────────────────────────
     const adminSession = this.adminSessions.get(chatId);

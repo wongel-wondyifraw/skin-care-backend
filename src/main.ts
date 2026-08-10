@@ -10,15 +10,28 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
   app.useGlobalFilters(new GlobalHttpExceptionFilter());
-  app.use(helmet());
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: 'cross-origin' },
+    }),
+  );
   app.use(cookieParser());
 
-  const origins = (process.env.FRONTEND_URL || 'http://localhost:3000')
+  const configuredOrigins = (process.env.FRONTEND_URL || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
+
+  const isAllowedOrigin = (origin?: string) => {
+    if (!origin) return true;
+    if (configuredOrigins.includes(origin)) return true;
+    return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+  };
+
   app.enableCors({
-    origin: origins.length === 1 ? origins[0] : origins,
+    origin: (origin, callback) => {
+      callback(null, isAllowedOrigin(origin));
+    },
     credentials: true,
   });
 
