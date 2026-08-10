@@ -58,6 +58,7 @@ export class ShopAuthService {
         initials: customerInitials(customer.fullName),
         telegramId: Number(customer.telegramId),
         phone: customer.phone,
+        address: customer.address,
         skinType: customer.skinType
           ? { id: customer.skinType.id, name: customer.skinType.name }
           : null,

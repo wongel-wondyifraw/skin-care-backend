@@ -6,6 +6,7 @@ import { CustomerModule } from '../customer/customer.module.js';
 import { ProductModule } from '../product/product.module.js';
 import { CategoryModule } from '../category/category.module.js';
 import { SkinTypeModule } from '../skin-type/skin-type.module.js';
+import { OrderModule } from '../order/order.module.js';
 import { ShopController } from './shop.controller.js';
 import { ShopAuthService } from './shop-auth.service.js';
 import { CustomerJwtStrategy } from './customer-jwt.strategy.js';
@@ -19,6 +20,7 @@ import { CustomerJwtAuthGuard } from './customer-jwt-auth.guard.js';
     ProductModule,
     CategoryModule,
     SkinTypeModule,
+    OrderModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

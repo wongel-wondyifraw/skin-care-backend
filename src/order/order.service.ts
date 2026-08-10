@@ -77,6 +77,78 @@ export class OrderService {
     return this.hydrateQuery().take(Math.min(20, Math.max(1, limit))).getMany();
   }
 
+  async findPageForCustomer(
+    customerId: string,
+    query: OrderListQuery = {},
+  ): Promise<PaginatedResult<Order>> {
+    const page = Math.max(1, query.page ?? 1);
+    const pageSize = Math.min(50, Math.max(1, query.pageSize ?? 20));
+
+    const qb = this.hydrateQuery()
+      .andWhere('order.customerId = :customerId', { customerId })
+      .skip((page - 1) * pageSize)
+      .take(pageSize);
+
+    if (query.status && query.status !== 'all') {
+      qb.andWhere('order.status = :status', { status: query.status });
+    }
+
+    const [items, total] = await qb.getManyAndCount();
+    return { items, total, page, pageSize };
+  }
+
+  /**
+   * Shop Mini App checkout — creates orders in the API (not via bot sendData).
+   * Each line item becomes its own order row. Telegram gets a placement notice.
+   */
+  async createForCustomer(
+    customerId: string,
+    items: { productId: string; quantity: number }[],
+    deliveryAddress?: string | null,
+  ): Promise<Order[]> {
+    if (!items?.length) {
+      throw new BadRequestException('Add at least one product to order');
+    }
+
+    const created: Order[] = [];
+    for (const line of items) {
+      const quantity = Math.floor(Number(line.quantity));
+      if (!Number.isFinite(quantity) || quantity < 1) {
+        throw new BadRequestException('Quantity must be at least 1');
+      }
+
+      const product = await this.productRepository.findOne({
+        where: { id: line.productId },
+      });
+      if (!product) {
+        throw new NotFoundException(`Product ${line.productId} not found`);
+      }
+
+      const order = await this.create({
+        customerId,
+        productId: product.id,
+        cost: Number(product.price) || 0,
+        quantity,
+        deliveryAddress: deliveryAddress ?? null,
+      });
+      created.push(order);
+    }
+
+    void this.notifyCustomerShopOrdersPlaced(created);
+    return created;
+  }
+
+  async findOneForCustomer(id: string, customerId: string): Promise<Order> {
+    const order = await this.hydrateQuery()
+      .where('order.id = :id', { id })
+      .andWhere('order.customerId = :customerId', { customerId })
+      .getOne();
+    if (!order) {
+      throw new NotFoundException(`Order with ID ${id} not found`);
+    }
+    return order;
+  }
+
   async findOne(id: string): Promise<Order> {
     const order = await this.hydrateQuery()
       .where('order.id = :id', { id })
@@ -179,6 +251,38 @@ export class OrderService {
     }
 
     return updated;
+  }
+
+  /** Notify after Mini App checkout (separate from bot-native order replies). */
+  private async notifyCustomerShopOrdersPlaced(orders: Order[]): Promise<void> {
+    if (!orders.length) return;
+    const first = orders[0];
+    const telegramId = first.customer?.telegramId;
+    if (telegramId == null) return;
+
+    const name = first.customer?.fullName ?? 'there';
+    const address = first.deliveryAddress?.trim();
+    const lines = orders.map((order) => {
+      const qty = order.quantity ?? 1;
+      const unit = Number(order.cost) || 0;
+      const productName = order.product?.name ?? 'Product';
+      return `• ${productName} × ${qty} — ${(unit * qty).toFixed(2)} ETB`;
+    });
+    const grandTotal = orders.reduce((sum, order) => {
+      const qty = order.quantity ?? 1;
+      return sum + (Number(order.cost) || 0) * qty;
+    }, 0);
+
+    const text =
+      `🛒 Order placed in the shop, ${name}!\n\n` +
+      `${lines.join('\n')}\n\n` +
+      `💰 Total: ${grandTotal.toFixed(2)} ETB\n` +
+      (address ? `📍 Delivery: ${address}\n` : '') +
+      `⏳ Status: pending\n\n` +
+      `We'll contact you soon to confirm delivery.\n` +
+      `Track status anytime in Products → My orders.`;
+
+    await this.telegramService.sendMessageSafe(String(telegramId), text);
   }
 
   private async notifyCustomerDelivered(order: Order): Promise<void> {

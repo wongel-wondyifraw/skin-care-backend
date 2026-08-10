@@ -12,25 +12,56 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { Type } from 'class-transformer';
-import { IsNumber, IsOptional, IsString } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsNumber,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Min,
+  ValidateNested,
+} from 'class-validator';
 import { ProductService } from '../product/product.service.js';
 import { CategoryService } from '../category/category.service.js';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
+import { OrderService } from '../order/order.service.js';
+import { CustomerService } from '../customer/customer.service.js';
 import { CustomerJwtAuthGuard } from './customer-jwt-auth.guard.js';
 import { ShopAuthService } from './shop-auth.service.js';
 import { customerInitials } from './telegram-webapp.js';
 
 class TelegramAuthDto {
-  /** Preferred: Telegram user id from WebApp.initDataUnsafe.user.id */
   @IsOptional()
   @Type(() => Number)
   @IsNumber()
   telegramId?: number;
 
-  /** Optional legacy field — ignored for auth, kept for older clients */
   @IsOptional()
   @IsString()
   initData?: string;
+}
+
+class ShopOrderItemDto {
+  @IsUUID()
+  productId: string;
+
+  @Type(() => Number)
+  @IsNumber()
+  @Min(1)
+  quantity: number;
+}
+
+class CreateShopOrdersDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ValidateNested({ each: true })
+  @Type(() => ShopOrderItemDto)
+  items: ShopOrderItemDto[];
+
+  @IsOptional()
+  @IsString()
+  deliveryAddress?: string;
 }
 
 type ShopCustomer = {
@@ -46,6 +77,8 @@ export class ShopController {
     private readonly productService: ProductService,
     private readonly categoryService: CategoryService,
     private readonly skinTypeService: SkinTypeService,
+    private readonly orderService: OrderService,
+    private readonly customerService: CustomerService,
   ) {}
 
   @Post('auth/telegram')
@@ -56,12 +89,18 @@ export class ShopController {
 
   @UseGuards(CustomerJwtAuthGuard)
   @Get('me')
-  me(@Req() req: { user: ShopCustomer }) {
+  async me(@Req() req: { user: ShopCustomer }) {
+    const customer = await this.customerService.findOne(req.user.id);
     return {
-      id: req.user.id,
-      fullName: req.user.fullName,
-      initials: customerInitials(req.user.fullName),
-      telegramId: req.user.telegramId,
+      id: customer.id,
+      fullName: customer.fullName,
+      initials: customerInitials(customer.fullName),
+      telegramId: Number(customer.telegramId),
+      phone: customer.phone,
+      address: customer.address,
+      skinType: customer.skinType
+        ? { id: customer.skinType.id, name: customer.skinType.name }
+        : null,
     };
   }
 
@@ -103,5 +142,43 @@ export class ShopController {
   @Get('skin-types')
   listSkinTypes() {
     return this.skinTypeService.findAll();
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Get('orders')
+  listOrders(
+    @Req() req: { user: ShopCustomer },
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('status') status?: 'pending' | 'delivered' | 'cancelled' | 'all',
+  ) {
+    return this.orderService.findPageForCustomer(req.user.id, {
+      page: page ? Number(page) : undefined,
+      pageSize: pageSize ? Number(pageSize) : undefined,
+      status,
+    });
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Get('orders/:id')
+  getOrder(
+    @Req() req: { user: ShopCustomer },
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.orderService.findOneForCustomer(id, req.user.id);
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Post('orders')
+  @HttpCode(HttpStatus.CREATED)
+  createOrders(
+    @Req() req: { user: ShopCustomer },
+    @Body() body: CreateShopOrdersDto,
+  ) {
+    return this.orderService.createForCustomer(
+      req.user.id,
+      body.items,
+      body.deliveryAddress,
+    );
   }
 }

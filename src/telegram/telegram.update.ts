@@ -456,7 +456,7 @@ export class TelegramUpdate {
     );
   }
 
-  /** Shared order kickoff used by inline Order buttons and Mini App sendData. */
+  /** Bot-native order kickoff (inline Order buttons / catalog). WebApp orders do not use this. */
   private async startOrderForProduct(
     ctx: Context,
     chatId: string,
@@ -519,28 +519,6 @@ export class TelegramUpdate {
         },
       },
     );
-  }
-
-  private async handleWebAppData(ctx: Context, chatId: string, raw: string) {
-    try {
-      const payload = JSON.parse(raw) as {
-        action?: string;
-        productId?: string;
-      };
-      if (payload.action === 'order' && payload.productId) {
-        await this.startOrderForProduct(ctx, chatId, payload.productId);
-        return;
-      }
-      await ctx.reply(`Received catalog action, but nothing to do.`, {
-        reply_markup: this.userKeyboard(ctx.from?.id),
-      });
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`Invalid web_app_data: ${msg}`);
-      await ctx.reply(`Could not process that catalog action. Please try again.`, {
-        reply_markup: this.userKeyboard(ctx.from?.id),
-      });
-    }
   }
 
   private async sendProductCardById(ctx: Context, productId: string) {
@@ -943,15 +921,11 @@ export class TelegramUpdate {
   async onMessage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
     const message = ctx.message as Message.TextMessage &
-      Message.ContactMessage &
-      Message.WebAppDataMessage;
+      Message.ContactMessage;
     const text = ('text' in message ? message.text : '').trim();
 
-    // ── Mini App sendData (order handoff) ────────────────────────
-    if ('web_app_data' in message && message.web_app_data?.data) {
-      await this.handleWebAppData(ctx, chatId, message.web_app_data.data);
-      return;
-    }
+    // WebApp orders are created via the shop API (not sendData / web_app_data).
+    // Bot-native orders continue below through the Order buttons + chat flow.
 
     // ── Admin password verification ──────────────────────────────
     const adminSession = this.adminSessions.get(chatId);
