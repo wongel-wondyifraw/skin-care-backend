@@ -15,6 +15,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsNumber,
+  IsOptional,
   IsUUID,
   Max,
   Min,
@@ -34,6 +35,14 @@ class BulkDiscountDto {
   @Min(0)
   @Max(100)
   discountPercent: number;
+
+  /** Hours until auto-expiry. Omit / null = manual until cleared. */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  @Min(0.25)
+  @Max(24 * 30)
+  durationHours?: number | null;
 }
 
 @UseGuards(JwtAuthGuard)
@@ -72,6 +81,7 @@ export class ProductController {
     return this.productService.setDiscounts(
       body.productIds,
       body.discountPercent,
+      body.durationHours,
     );
   }
 

@@ -75,6 +75,10 @@ export class Product {
   @Column({ type: 'int', default: 0 })
   discountPercent: number;
 
+  /** When set, discount auto-expires at this time. Null = manual until cleared. */
+  @Column({ type: 'timestamptz', nullable: true })
+  discountEndsAt: Date | null;
+
   @Index()
   @CreateDateColumn()
   createdAt: Date;

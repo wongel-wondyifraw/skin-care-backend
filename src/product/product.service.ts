@@ -69,6 +69,15 @@ export class ProductService implements OnModuleInit {
         ADD COLUMN IF NOT EXISTS "discountPercent" integer DEFAULT 0 NOT NULL
       `);
       await this.dataSource.query(`
+        ALTER TABLE products
+        ADD COLUMN IF NOT EXISTS "discountEndsAt" TIMESTAMPTZ NULL
+      `);
+      await this.clearExpiredDiscounts();
+      // Periodically clear expired timed discounts (best-effort).
+      setInterval(() => {
+        void this.clearExpiredDiscounts();
+      }, 60_000);
+      await this.dataSource.query(`
         CREATE TABLE IF NOT EXISTS product_skin_types (
           "productId" uuid NOT NULL,
           "skinTypeId" uuid NOT NULL,
@@ -99,7 +108,35 @@ export class ProductService implements OnModuleInit {
     ) {
       product.skinTypes = [product.skinType];
     }
+    return this.applyLiveDiscount(product);
+  }
+
+  /** Zero out expired timed discounts in the response payload. */
+  private applyLiveDiscount(product: Product): Product {
+    if (
+      product.discountEndsAt &&
+      new Date(product.discountEndsAt).getTime() <= Date.now()
+    ) {
+      product.discountPercent = 0;
+      product.discountEndsAt = null;
+    }
     return product;
+  }
+
+  async clearExpiredDiscounts(): Promise<number> {
+    const result = await this.productRepository
+      .createQueryBuilder()
+      .update(Product)
+      .set({ discountPercent: 0, discountEndsAt: null })
+      .where('"discountEndsAt" IS NOT NULL')
+      .andWhere('"discountEndsAt" <= NOW()')
+      .andWhere('"discountPercent" > 0')
+      .execute();
+    const n = result.affected ?? 0;
+    if (n > 0) {
+      this.logger.log(`Cleared ${n} expired product discount(s)`);
+    }
+    return n;
   }
 
   async findAll(): Promise<Product[]> {
@@ -164,7 +201,9 @@ export class ProductService implements OnModuleInit {
     }
 
     if (query.discounted) {
-      qb.andWhere('product.discountPercent > 0');
+      qb.andWhere('product.discountPercent > 0').andWhere(
+        '(product.discountEndsAt IS NULL OR product.discountEndsAt > NOW())',
+      );
     }
 
     const items = await qb.getMany();
@@ -224,19 +263,41 @@ export class ProductService implements OnModuleInit {
       .filter((p): p is Product => Boolean(p));
   }
 
+  /**
+   * @param durationHours null/undefined = manual (until cleared).
+   *   Positive number = expires after that many hours.
+   */
   async setDiscounts(
     productIds: string[],
     discountPercent: number,
-  ): Promise<{ updated: number; discountPercent: number }> {
+    durationHours?: number | null,
+  ): Promise<{
+    updated: number;
+    discountPercent: number;
+    discountEndsAt: Date | null;
+  }> {
     if (!Array.isArray(productIds) || productIds.length === 0) {
       throw new BadRequestException('Select at least one product');
     }
     const pct = clampDiscountPercent(discountPercent);
+    let discountEndsAt: Date | null = null;
+    if (pct > 0 && durationHours != null) {
+      const hours = Number(durationHours);
+      if (!Number.isFinite(hours) || hours <= 0) {
+        throw new BadRequestException('durationHours must be a positive number');
+      }
+      discountEndsAt = new Date(Date.now() + hours * 60 * 60 * 1000);
+    }
+
     const result = await this.productRepository.update(
       { id: In(productIds) },
-      { discountPercent: pct },
+      { discountPercent: pct, discountEndsAt },
     );
-    return { updated: result.affected ?? 0, discountPercent: pct };
+    return {
+      updated: result.affected ?? 0,
+      discountPercent: pct,
+      discountEndsAt,
+    };
   }
 
   private async findOrCreateAllSkinType(): Promise<SkinType> {
@@ -305,6 +366,7 @@ export class ProductService implements OnModuleInit {
       stock: data.stock ?? 0,
       price: data.price ?? 0,
       discountPercent: clampDiscountPercent(data.discountPercent ?? 0),
+      discountEndsAt: null,
       skinTypes,
       skinTypeId: skinTypes[0]?.id ?? null,
     });
@@ -346,6 +408,7 @@ export class ProductService implements OnModuleInit {
     if (data.price !== undefined) product.price = data.price;
     if (data.discountPercent !== undefined) {
       product.discountPercent = clampDiscountPercent(data.discountPercent);
+      if (product.discountPercent <= 0) product.discountEndsAt = null;
     }
 
     if (data.skinTypeIds !== undefined || data.skinTypeId !== undefined) {

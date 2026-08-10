@@ -128,7 +128,11 @@ export class OrderService {
       const order = await this.create({
         customerId,
         productId: product.id,
-        cost: effectiveUnitPrice(product.price, product.discountPercent),
+        cost: effectiveUnitPrice(
+          product.price,
+          product.discountPercent,
+          product.discountEndsAt,
+        ),
         quantity,
         deliveryAddress: deliveryAddress ?? null,
       });

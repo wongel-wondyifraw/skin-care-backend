@@ -496,7 +496,11 @@ export class TelegramUpdate {
       step: 'awaiting_quantity',
       productId: product.id,
       customerId: customer.id,
-      cost: effectiveUnitPrice(product.price, product.discountPercent),
+      cost: effectiveUnitPrice(
+        product.price,
+        product.discountPercent,
+        product.discountEndsAt,
+      ),
       productName: product.name,
       maxStock: product.stock,
     });
@@ -506,7 +510,11 @@ export class TelegramUpdate {
       [{ text: '❌ Cancel order' }],
     ];
 
-    const unit = effectiveUnitPrice(product.price, product.discountPercent);
+    const unit = effectiveUnitPrice(
+      product.price,
+      product.discountPercent,
+      product.discountEndsAt,
+    );
     const pct = Math.floor(Number(product.discountPercent) || 0);
     const priceLine =
       pct > 0
