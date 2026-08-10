@@ -9,6 +9,19 @@ export type TelegramWebAppUser = {
   language_code?: string;
 };
 
+function parseInitData(initData: string): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const part of initData.split('&')) {
+    if (!part) continue;
+    const eq = part.indexOf('=');
+    if (eq < 0) continue;
+    const key = decodeURIComponent(part.slice(0, eq));
+    const value = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, ' '));
+    map.set(key, value);
+  }
+  return map;
+}
+
 /**
  * Validates Telegram Mini App initData per
  * https://core.telegram.org/bots/webapps#validating-data-received-via-the-mini-app
@@ -25,7 +38,7 @@ export function validateTelegramWebAppInitData(
     throw new UnauthorizedException('Bot token is not configured');
   }
 
-  const params = new URLSearchParams(initData);
+  const params = parseInitData(initData);
   const hash = params.get('hash');
   if (!hash) {
     throw new UnauthorizedException('Missing initData hash');
@@ -44,9 +57,14 @@ export function validateTelegramWebAppInitData(
     .update(dataCheckString)
     .digest('hex');
 
-  const a = Buffer.from(computed, 'hex');
-  const b = Buffer.from(hash, 'hex');
-  if (a.length !== b.length || !timingSafeEqual(a, b)) {
+  try {
+    const a = Buffer.from(computed, 'hex');
+    const b = Buffer.from(hash, 'hex');
+    if (a.length !== b.length || !timingSafeEqual(a, b)) {
+      throw new UnauthorizedException('Invalid Telegram initData');
+    }
+  } catch (err) {
+    if (err instanceof UnauthorizedException) throw err;
     throw new UnauthorizedException('Invalid Telegram initData');
   }
 

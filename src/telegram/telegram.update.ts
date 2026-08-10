@@ -28,28 +28,9 @@ import {
 const CATALOG_PAGE_SIZE = 8;
 const MAX_PRODUCT_CARDS = 3;
 
-// ─── Persistent admin keyboard shown at the bottom of the chat ──────────────
-const ADMIN_KEYBOARD = {
-  keyboard: [
-    [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
-    [{ text: '🔍 Scan Face' }, { text: '📦 Products' }],
-    [{ text: '👥 Customers' }, { text: '🛒 Orders' }],
-    [{ text: '🌐 Web Catalog' }, { text: '⚙️ Settings' }],
-    [{ text: '🚪 Logout' }],
-  ],
-  resize_keyboard: true,
-};
+type ReplyButton = { text: string; web_app?: { url: string } };
 
-// ─── User keyboard with profile + products ───────────────────────────────────
-const USER_KEYBOARD = {
-  keyboard: [
-    [{ text: '👤 Profile' }, { text: '💡 Get Advice' }],
-    [{ text: '🔍 Scan Face' }, { text: '📦 Products' }],
-  ],
-  resize_keyboard: true,
-};
-
-/** Sticky submenu after tapping Products */
+/** Sticky submenu after tapping Products (fallback when Mini App URL is unset) */
 const PRODUCTS_KEYBOARD = {
   keyboard: [
     [{ text: '✨ Recommended' }, { text: '📂 Categories' }],
@@ -81,6 +62,43 @@ export class TelegramUpdate {
     private readonly config: ConfigService,
   ) {}
 
+  private shopWebAppUrl(): string | null {
+    const raw = (this.config.get<string>('SHOP_WEBAPP_URL') || '').trim();
+    if (!raw) return null;
+    return raw.replace(/\/+$/, '');
+  }
+
+  private productsButton(): ReplyButton {
+    const shopUrl = this.shopWebAppUrl();
+    return shopUrl
+      ? { text: '📦 Products', web_app: { url: shopUrl } }
+      : { text: '📦 Products' };
+  }
+
+  /** Main user reply keyboard — Products opens the Mini App when configured. */
+  private userKeyboard() {
+    return {
+      keyboard: [
+        [{ text: '👤 Profile' }, { text: '✨ Recommended' }],
+        [{ text: '🔍 Scan Face' }, this.productsButton()],
+      ],
+      resize_keyboard: true,
+    };
+  }
+
+  private adminKeyboard() {
+    return {
+      keyboard: [
+        [{ text: '👤 Profile' }, { text: '✨ Recommended' }],
+        [{ text: '🔍 Scan Face' }, this.productsButton()],
+        [{ text: '👥 Customers' }, { text: '🛒 Orders' }],
+        [{ text: '🌐 Web Catalog' }, { text: '⚙️ Settings' }],
+        [{ text: '🚪 Logout' }],
+      ],
+      resize_keyboard: true,
+    };
+  }
+
   // ─────────────────────────────────────────────
   // /start
   // ─────────────────────────────────────────────
@@ -103,7 +121,7 @@ export class TelegramUpdate {
         `Welcome back, ${existing.fullName}! 👋\n\n` +
           `You are already registered with Medaf Skin Care. 🌿\n` +
           `We will keep you updated on new arrivals and offers!`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
       return;
     }
@@ -177,14 +195,14 @@ export class TelegramUpdate {
     if (!customer) {
       await ctx.reply(
         `Please complete your registration first by sending /start.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
       return;
     }
 
     await ctx.reply(
       `⏳ Analyzing your skin type and our product catalog...\n\nThis may take a few seconds.`,
-      { reply_markup: USER_KEYBOARD },
+      { reply_markup: this.userKeyboard() },
     );
 
     try {
@@ -193,7 +211,7 @@ export class TelegramUpdate {
       if (allProducts.length === 0) {
         await ctx.reply(
           `Sorry, we don't have any products in our catalog yet. Please check back later!`,
-          { reply_markup: USER_KEYBOARD },
+          { reply_markup: this.userKeyboard() },
         );
         return;
       }
@@ -223,7 +241,7 @@ export class TelegramUpdate {
         await ctx.reply(
           `😔 Unfortunately, we don't have any products specifically for ${userSkinType} skin type in our catalog yet.\n\n` +
             `Please check back later, or contact our support team for personalized recommendations!`,
-          { reply_markup: USER_KEYBOARD },
+          { reply_markup: this.userKeyboard() },
         );
         return;
       }
@@ -239,7 +257,7 @@ export class TelegramUpdate {
           `We have products for ${userSkinType || 'your'} skin type, but they are currently out of stock:\n\n` +
             `${productNames}\n\n` +
             `Please check back soon or contact us to pre-order!`,
-          { reply_markup: USER_KEYBOARD },
+          { reply_markup: this.userKeyboard() },
         );
         return;
       }
@@ -279,7 +297,7 @@ export class TelegramUpdate {
       if (recommendedProducts.length === 0) {
         await ctx.reply(
           `No specific products were matched. Browse our full catalog for more options!`,
-          { reply_markup: USER_KEYBOARD },
+          { reply_markup: this.userKeyboard() },
         );
         return;
       }
@@ -321,7 +339,7 @@ export class TelegramUpdate {
 
       // Restore the sticky keyboard after all cards are sent
       await ctx.reply(`That's your personalized recommendation! 😊`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
 
       this.logger.log(
@@ -334,7 +352,7 @@ export class TelegramUpdate {
       );
       await ctx.reply(
         `Sorry, something went wrong while generating your skincare advice. Please try again later.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
     }
   }
@@ -422,31 +440,9 @@ export class TelegramUpdate {
     return `${trimmed.slice(0, max - 1)}…`;
   }
 
-  private shopWebAppUrl(): string | null {
-    const raw = (this.config.get<string>('SHOP_WEBAPP_URL') || '').trim();
-    if (!raw) return null;
-    return raw.replace(/\/+$/, '');
-  }
-
   private async showProductsMenu(ctx: Context, header?: string) {
-    const shopUrl = this.shopWebAppUrl();
-    if (shopUrl) {
-      await ctx.reply(
-        header ??
-          `📦 Products\n\nOpen the catalog to browse, search, and filter our products.`,
-        {
-          reply_markup: {
-            keyboard: [
-              [{ text: '🛍️ Open Catalog', web_app: { url: shopUrl } }],
-              [{ text: '✨ Recommended' }, { text: '◀️ Back' }],
-            ],
-            resize_keyboard: true,
-          },
-        },
-      );
-      return;
-    }
-
+    // When Mini App URL is configured, Products is a web_app button on the main
+    // keyboard — this fallback is only for chats without SHOP_WEBAPP_URL.
     await ctx.reply(
       header ??
         `📦 Products\n\nChoose how you'd like to browse:`,
@@ -464,7 +460,7 @@ export class TelegramUpdate {
     if (!customer) {
       await ctx.reply(
         `Please register first with /start before placing an order.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
       return;
     }
@@ -474,7 +470,7 @@ export class TelegramUpdate {
       product = await this.productService.findOne(productId);
     } catch {
       await ctx.reply(`Sorry, that product is no longer available.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
       return;
     }
@@ -482,7 +478,7 @@ export class TelegramUpdate {
     if (product.stock <= 0) {
       await ctx.reply(
         `🔔 Thanks! We'll notify you when "${product.name}" is back in stock.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
       return;
     }
@@ -530,13 +526,13 @@ export class TelegramUpdate {
         return;
       }
       await ctx.reply(`Received catalog action, but nothing to do.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Invalid web_app_data: ${msg}`);
       await ctx.reply(`Could not process that catalog action. Please try again.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     }
   }
@@ -925,7 +921,7 @@ export class TelegramUpdate {
       await ctx.reply(
         `❌ Order cancelled.\n\n🌿 ${order.product?.name ?? 'Product'}\n` +
           `Qty: ${order.quantity}\nNo stock was changed.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -976,6 +972,7 @@ export class TelegramUpdate {
         text === '◀️ Back' ||
         text === '👤 Profile' ||
         text === '💡 Get Advice' ||
+        text === '✨ Recommended' ||
         text === '📦 Products' ||
         text === '🔍 Scan Face'
       ) {
@@ -1036,8 +1033,8 @@ export class TelegramUpdate {
       }
     }
 
-    // ── "💡 Get Advice" button press (always available) ──────────
-    if (text === '💡 Get Advice') {
+    // ── Recommended (legacy "Get Advice" still accepted) ─────────
+    if (text === '✨ Recommended' || text === '💡 Get Advice') {
       this.catalogSessions.delete(chatId);
       this.scanSessions.delete(chatId);
       await this.handleGetAdvice(ctx, chatId);
@@ -1050,16 +1047,10 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Products browse (user + admin sticky) ────────────────────
+    // ── Products browse (fallback when Mini App URL is not set) ──
     if (text === '📦 Products') {
       this.catalogSessions.delete(chatId);
       await this.showProductsMenu(ctx);
-      return;
-    }
-
-    if (text === '✨ Recommended') {
-      this.catalogSessions.delete(chatId);
-      await this.handleGetAdvice(ctx, chatId);
       return;
     }
 
@@ -1078,8 +1069,8 @@ export class TelegramUpdate {
       this.catalogSessions.delete(chatId);
       this.scanSessions.delete(chatId);
       const replyMarkup = this.adminSessions.isAuthenticated(chatId)
-        ? ADMIN_KEYBOARD
-        : USER_KEYBOARD;
+        ? this.adminKeyboard()
+        : this.userKeyboard();
       await ctx.reply(`Main menu:`, { reply_markup: replyMarkup });
       return;
     }
@@ -1122,7 +1113,7 @@ export class TelegramUpdate {
           await this.customerMessageService.recordInbound(customer.id, text);
           await ctx.reply(
             `Thanks — our team received your message and will reply here soon.`,
-            { reply_markup: USER_KEYBOARD },
+            { reply_markup: this.userKeyboard() },
           );
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
@@ -1142,9 +1133,9 @@ export class TelegramUpdate {
     return [
       '👤 Profile',
       '💡 Get Advice',
+      '✨ Recommended',
       '🔍 Scan Face',
       '📦 Products',
-      '✨ Recommended',
       '📂 Categories',
       '🔍 Search Product',
       '◀️ Back',
@@ -1163,7 +1154,7 @@ export class TelegramUpdate {
     if (!customer) {
       await ctx.reply(
         `Please complete your registration first by sending /start.`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
       return;
     }
@@ -1309,8 +1300,8 @@ export class TelegramUpdate {
         `This is observational advice only — not a medical diagnosis.`,
         {
           reply_markup: this.adminSessions.isAuthenticated(chatId)
-            ? ADMIN_KEYBOARD
-            : USER_KEYBOARD,
+            ? this.adminKeyboard()
+            : this.userKeyboard(),
         },
       );
     } catch (err) {
@@ -1336,7 +1327,7 @@ export class TelegramUpdate {
   ) {
     if (text === '❌ Cancel order') {
       this.orderSessions.delete(chatId);
-      await ctx.reply(`Order cancelled.`, { reply_markup: USER_KEYBOARD });
+      await ctx.reply(`Order cancelled.`, { reply_markup: this.userKeyboard() });
       return;
     }
 
@@ -1438,7 +1429,7 @@ export class TelegramUpdate {
         },
       );
       await ctx.reply(`Use the menu below anytime:`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       this.orderSessions.delete(chatId);
@@ -1447,7 +1438,7 @@ export class TelegramUpdate {
       const userMsg = /insufficient stock/i.test(msg)
         ? `Sorry, that quantity is no longer available. Please try again with a smaller quantity.`
         : `Sorry, we couldn't place your order. Please try again.`;
-      await ctx.reply(userMsg, { reply_markup: USER_KEYBOARD });
+      await ctx.reply(userMsg, { reply_markup: this.userKeyboard() });
     }
   }
 
@@ -1468,7 +1459,7 @@ export class TelegramUpdate {
       if (text === '❌ Cancel') {
         this.profileEditSessions.delete(chatId);
         await ctx.reply(`Profile edit cancelled.`, {
-          reply_markup: USER_KEYBOARD,
+          reply_markup: this.userKeyboard(),
         });
         return;
       }
@@ -1586,13 +1577,13 @@ export class TelegramUpdate {
       });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your name has been updated to: ${name}`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update name: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -1621,13 +1612,13 @@ export class TelegramUpdate {
       await this.customerService.update(session.customerId, { phone });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your phone has been updated to: ${phone}`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update phone: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -1657,13 +1648,13 @@ export class TelegramUpdate {
       this.profileEditSessions.delete(chatId);
       const displayName = match ? match.name : 'Not specified';
       await ctx.reply(`✅ Your skin type has been updated to: ${displayName}`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update skin type: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -1685,13 +1676,13 @@ export class TelegramUpdate {
       await this.customerService.update(session.customerId, { address });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your address has been updated to: ${address}`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to update address: ${msg}`);
       await ctx.reply(`Failed to update. Please try again later.`, {
-        reply_markup: USER_KEYBOARD,
+        reply_markup: this.userKeyboard(),
       });
       this.profileEditSessions.delete(chatId);
     }
@@ -1722,7 +1713,7 @@ export class TelegramUpdate {
 
   private async sendAdminMenu(ctx: Context, headerText: string) {
     await ctx.reply(`${headerText}\n\nUse the buttons below to manage your store:`, {
-      reply_markup: ADMIN_KEYBOARD,
+      reply_markup: this.adminKeyboard(),
     });
   }
 
@@ -1736,7 +1727,7 @@ export class TelegramUpdate {
         await ctx.reply(
           `🌐 Web Catalog\n\nManage your product catalogue via the web admin panel:\n` +
             `https://skin-care-frontend-ecru.vercel.app/admin/products`,
-          { reply_markup: ADMIN_KEYBOARD },
+          { reply_markup: this.adminKeyboard() },
         );
         break;
 
@@ -1748,7 +1739,7 @@ export class TelegramUpdate {
         await ctx.reply(
           `🛒 Orders\n\nView and manage orders in the web admin panel:\n` +
             `https://skin-care-frontend-ecru.vercel.app/admin/orders`,
-          { reply_markup: ADMIN_KEYBOARD },
+          { reply_markup: this.adminKeyboard() },
         );
         break;
 
@@ -1756,7 +1747,7 @@ export class TelegramUpdate {
         await ctx.reply(
           `⚙️ Settings\n\nManage your store settings via the web admin panel:\n` +
             `https://skin-care-frontend-ecru.vercel.app/admin/settings`,
-          { reply_markup: ADMIN_KEYBOARD },
+          { reply_markup: this.adminKeyboard() },
         );
         break;
 
@@ -1765,7 +1756,7 @@ export class TelegramUpdate {
         this.catalogSessions.delete(chatId);
         this.scanSessions.delete(chatId);
         await ctx.reply(`👋 You have been logged out of admin mode.`, {
-          reply_markup: USER_KEYBOARD,
+          reply_markup: this.userKeyboard(),
         });
         break;
 
@@ -1783,7 +1774,7 @@ export class TelegramUpdate {
 
     if (total === 0) {
       await ctx.reply(`👥 No registered customers yet.`, {
-        reply_markup: ADMIN_KEYBOARD,
+        reply_markup: this.adminKeyboard(),
       });
       return;
     }
@@ -1796,7 +1787,7 @@ export class TelegramUpdate {
 
     await ctx.reply(
       `👥 Registered Customers (${total} total)\n\n${summary}${note}`,
-      { reply_markup: ADMIN_KEYBOARD },
+      { reply_markup: this.adminKeyboard() },
     );
   }
 
@@ -2013,7 +2004,7 @@ export class TelegramUpdate {
           `📍 Address: ${address}\n\n` +
           `Welcome to the Medaf Skin Care family! We will keep you updated on ` +
           `new arrivals, offers, and skincare tips. 😊`,
-        { reply_markup: USER_KEYBOARD },
+        { reply_markup: this.userKeyboard() },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
