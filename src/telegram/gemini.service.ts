@@ -25,7 +25,8 @@ export class GeminiService {
         'You are a strict product recommendation filter for Medaf Skin Care. ' +
         'You operate in a CLOSED-WORLD environment. You are strictly forbidden ' +
         'from inventing, suggesting, or mentioning any product, brand, or routine ' +
-        'step that is not explicitly provided in the user inventory context.',
+        'step that is not explicitly provided in the user inventory context. ' +
+        'Keep answers minimal: short bullets only, never long paragraphs.',
       generationConfig: { temperature: 0.1, topP: 0.8 },
     });
 
@@ -33,9 +34,10 @@ export class GeminiService {
       model: modelName,
       systemInstruction:
         'You are a careful visual skincare assistant for Medaf Skin Care. ' +
-        'You observe facial photos, describe visible skin concerns, give gentle advice, ' +
+        'You observe facial photos, note visible concerns in short bullets, ' +
         'and recommend ONLY products from the provided Medaf catalog. ' +
-        'You never invent products or give medical diagnoses.',
+        'You never invent products or give medical diagnoses. ' +
+        'Keep answers minimal: short bullets only, never long paragraphs.',
       generationConfig: { temperature: 0.3, topP: 0.85 },
     });
 
@@ -81,29 +83,42 @@ export class GeminiService {
       `3. For each product you recommend, use its EXACT listed name.\n` +
       `4. If a listed product is OUT OF STOCK, state its out-of-stock status clearly.\n` +
       `5. Base recommendations on suitability for skin type: ${skinType}.\n\n` +
-      `TASK:\n` +
-      `1. Construct a simple morning/evening routine using ONLY available items from the inventory list above.\n` +
-      `2. For each product used, explain briefly why it suits ${skinType} skin and how to use it.\n\n` +
-      `FORMATTING RULES:\n` +
-      `- DO NOT use markdown characters like *, **, #, ##, or ###\n` +
-      `- Use plain text only with clean line breaks and spacing\n` +
-      `- Use emojis (e.g. 🌅, 🌙, 💧, ✨, 🌿) for visual sections\n` +
-      `- Keep it friendly, warm, conversational, and easy to read on mobile screens\n\n`;
+      `TASK (KEEP SHORT):\n` +
+      `1. Recommend only the best-fit products from the inventory (prefer 2–4 items).\n` +
+      `2. For EACH recommended product, give ONE short bullet with the product name + its main benefit for ${skinType} skin.\n` +
+      `3. Optionally add a tiny morning/evening order as short bullets (product names only).\n` +
+      `4. Do NOT write paragraphs, essays, long routines, or bulk explanations.\n\n` +
+      `OUTPUT FORMAT (plain text, no markdown like *, **, #):\n` +
+      `Recommendations\n` +
+      `- <Exact Product Name> — <one short benefit>\n` +
+      `- <Exact Product Name> — <one short benefit>\n` +
+      `Routine (optional)\n` +
+      `- Morning: <product>, <product>\n` +
+      `- Evening: <product>, <product>\n` +
+      `Rules:\n` +
+      `- Bullets only; each bullet max ~12 words\n` +
+      `- Focus on product benefit, not long how-to\n` +
+      `- Light emojis only in section titles if helpful\n` +
+      `- Easy to read on Telegram mobile\n\n`;
 
     if (includeAmharic) {
       prompt +=
         `BILINGUAL RESPONSE REQUIRED:\n` +
-        `- Provide the ENTIRE response in BOTH English and Amharic\n` +
-        `- Structure: English section first, then "---" on its own line, then Amharic section\n` +
-        `- DO NOT translate product names (keep exact English product names as-is)\n` +
-        `- DO NOT translate technical terms (e.g., "moisturizer", "serum", "SPF", "pH")\n` +
-        `- Translate only advice, explanations, and usage instructions into Amharic\n\n`;
+        `- English section first (same bullet format)\n` +
+        `- Then a line with only ---\n` +
+        `- Then Amharic section with the SAME bullet structure\n` +
+        `- Keep exact product names in English (never translate product names)\n` +
+        `- Keep technical skincare terms in English when there is no clear everyday Amharic word ` +
+        `(examples: moisturizer, serum, cleanser, toner, SPF, sunscreen, niacinamide, retinol, hyaluronic acid, pH)\n` +
+        `- If any phrase has no natural/direct Amharic translation, KEEP THAT PHRASE IN ENGLISH inside the Amharic section\n` +
+        `- Do not invent awkward Amharic for technical words; prefer English\n` +
+        `- Amharic bullets must stay short and simple like the English ones\n\n`;
     }
 
     if (userSkinType === null) {
       prompt +=
-        `Note: Customer skin type is "Not specified". Provide versatile advice ` +
-        `using the available products suitable for general skin types.`;
+        `Note: Customer skin type is "Not specified". Recommend versatile in-stock products ` +
+        `suitable for general skin types, still using the short bullet format.`;
     }
 
     try {
@@ -169,31 +184,40 @@ export class GeminiService {
       `If the photo is usable, start with this exact first line:\n` +
       `PHOTO_OK\n\n` +
       `STEP 2 — VISUAL FINDINGS (only if PHOTO_OK):\n` +
-      `Describe what is visible by region when possible (forehead, cheeks, nose, chin, under-eye):\n` +
-      `- discoloration / dark spots / hyperpigmentation / uneven tone\n` +
-      `- pimples / acne / whiteheads / blackheads\n` +
-      `- red spots / redness / irritation / inflammation\n` +
-      `- dryness / flaking / oiliness / visible pores\n` +
-      `- anything else clearly visible (e.g. dark circles)\n` +
-      `Be observational and humble. This is NOT a medical diagnosis. ` +
-      `Suggest seeing a dermatologist for severe or persistent issues.\n\n` +
-      `STEP 3 — ADVICE + PRODUCTS:\n` +
+      `List only clear visible concerns as short bullets (max 4 bullets).\n` +
+      `Mention region when useful (forehead, cheeks, nose, chin, under-eye).\n` +
+      `Possible concerns: dark spots, uneven tone, pimples/acne, redness, dryness, oiliness, pores, dark circles.\n` +
+      `This is NOT a medical diagnosis. If severe, add one short line to see a dermatologist.\n\n` +
+      `STEP 3 — PRODUCT RECOMMENDATIONS:\n` +
       `Customer stated skin type: ${skinType}\n` +
-      `Recommend ONLY products from this closed-world Medaf catalog.\n` +
+      `Recommend ONLY products from this closed-world Medaf catalog (prefer 2–4 in-stock items).\n` +
       `EXACT ALLOWED PRODUCTS: [ ${exactProductNames || 'none'} ]\n\n` +
       `INVENTORY:\n${productList || 'No products in catalog.'}\n\n` +
-      `Prefer in-stock items. Do not invent brands or products. ` +
+      `Do not invent brands or products. ` +
       `If a needed step has no matching product, say Medaf does not currently have it.\n\n` +
-      `FORMAT (plain text, no markdown like *, **, #):\n` +
-      `Observed on your photo\n` +
-      `Care tips\n` +
-      `Products from our catalog\n` +
-      `Keep it concise for Telegram. Use light emojis if helpful.\n`;
+      `OUTPUT FORMAT (plain text, no markdown like *, **, #):\n` +
+      `Observed\n` +
+      `- <short finding>\n` +
+      `Recommendations\n` +
+      `- <Exact Product Name> — <one short benefit for this photo/skin>\n` +
+      `- <Exact Product Name> — <one short benefit>\n` +
+      `Rules:\n` +
+      `- Bullets only; each bullet max ~12 words\n` +
+      `- Minimal explanation; focus on product benefit\n` +
+      `- No long paragraphs or bulk care essays\n` +
+      `- Keep concise for Telegram\n`;
 
     if (includeAmharic) {
       prompt +=
-        `\nAlso provide an Amharic translation after a line with only ---.\n` +
-        `Keep product names in English.\n`;
+        `\nBILINGUAL RESPONSE REQUIRED (after PHOTO_OK content):\n` +
+        `- English section first in the bullet format above\n` +
+        `- Then a line with only ---\n` +
+        `- Then Amharic section with the SAME short bullet structure\n` +
+        `- Keep exact product names in English\n` +
+        `- Keep technical skincare terms in English when there is no clear everyday Amharic word ` +
+        `(moisturizer, serum, cleanser, toner, SPF, sunscreen, niacinamide, retinol, hyaluronic acid, pH, etc.)\n` +
+        `- If any phrase has no natural/direct Amharic translation, KEEP THAT PHRASE IN ENGLISH inside the Amharic section\n` +
+        `- Do not invent awkward Amharic for technical words; prefer English\n`;
     }
 
     try {
