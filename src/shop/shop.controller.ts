@@ -11,7 +11,8 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
-import { IsString, MinLength } from 'class-validator';
+import { Type } from 'class-transformer';
+import { IsNumber, IsOptional, IsString } from 'class-validator';
 import { ProductService } from '../product/product.service.js';
 import { CategoryService } from '../category/category.service.js';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
@@ -20,9 +21,16 @@ import { ShopAuthService } from './shop-auth.service.js';
 import { customerInitials } from './telegram-webapp.js';
 
 class TelegramAuthDto {
+  /** Preferred: Telegram user id from WebApp.initDataUnsafe.user.id */
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  telegramId?: number;
+
+  /** Optional legacy field — ignored for auth, kept for older clients */
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  initData: string;
+  initData?: string;
 }
 
 type ShopCustomer = {
@@ -43,7 +51,7 @@ export class ShopController {
   @Post('auth/telegram')
   @HttpCode(HttpStatus.OK)
   login(@Body() body: TelegramAuthDto) {
-    return this.shopAuthService.loginWithInitData(body.initData);
+    return this.shopAuthService.loginWithTelegramId(body.telegramId as number);
   }
 
   @UseGuards(CustomerJwtAuthGuard)

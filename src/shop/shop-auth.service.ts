@@ -1,15 +1,12 @@
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
-  UnauthorizedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { CustomerService } from '../customer/customer.service.js';
-import {
-  customerInitials,
-  validateTelegramWebAppInitData,
-} from './telegram-webapp.js';
+import { customerInitials } from './telegram-webapp.js';
 import type { CustomerJwtPayload } from './customer-jwt.strategy.js';
 
 @Injectable()
@@ -27,14 +24,14 @@ export class ShopAuthService {
     );
   }
 
-  async loginWithInitData(initData: string) {
-    const botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN');
-    if (!botToken) {
-      throw new UnauthorizedException('Telegram bot is not configured');
+  /** Simple auth: match Telegram user id to the customers table. */
+  async loginWithTelegramId(telegramIdRaw: number | string) {
+    const telegramId = Number(telegramIdRaw);
+    if (!Number.isFinite(telegramId) || telegramId <= 0) {
+      throw new BadRequestException('A valid Telegram user id is required');
     }
 
-    const { user } = validateTelegramWebAppInitData(initData, botToken);
-    const customer = await this.customerService.findByTelegramId(user.id);
+    const customer = await this.customerService.findByTelegramId(telegramId);
     if (!customer) {
       throw new ForbiddenException(
         'Please finish registration in the Medaf bot with /start before browsing products.',
@@ -59,6 +56,7 @@ export class ShopAuthService {
         id: customer.id,
         fullName: customer.fullName,
         initials: customerInitials(customer.fullName),
+        telegramId: Number(customer.telegramId),
         phone: customer.phone,
         skinType: customer.skinType
           ? { id: customer.skinType.id, name: customer.skinType.name }
