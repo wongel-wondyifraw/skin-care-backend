@@ -50,6 +50,7 @@ export class ProductController {
     @Query('skinTypeId') skinTypeId?: string,
     @Query('stock') stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock',
     @Query('sort') sort?: 'name' | 'recent',
+    @Query('discounted') discounted?: string,
   ) {
     return this.productService.findPage({
       page: page ? Number(page) : undefined,
@@ -59,6 +60,10 @@ export class ProductController {
       skinTypeId,
       stock,
       sort,
+      discounted:
+        discounted === '1' ||
+        discounted === 'true' ||
+        discounted === 'yes',
     });
   }
 

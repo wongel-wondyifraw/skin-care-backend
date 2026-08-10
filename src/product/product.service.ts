@@ -27,6 +27,8 @@ export interface ProductListQuery {
   skinTypeId?: string;
   stock?: 'all' | 'in_stock' | 'low_stock' | 'out_of_stock';
   sort?: 'name' | 'recent';
+  /** When true, only products with discountPercent > 0 */
+  discounted?: boolean;
 }
 
 export type ProductWriteInput = {
@@ -159,6 +161,10 @@ export class ProductService implements OnModuleInit {
       qb.andWhere('product.stock > 0 AND product.stock < 10');
     } else if (query.stock === 'in_stock') {
       qb.andWhere('product.stock > 0');
+    }
+
+    if (query.discounted) {
+      qb.andWhere('product.discountPercent > 0');
     }
 
     const items = await qb.getMany();
