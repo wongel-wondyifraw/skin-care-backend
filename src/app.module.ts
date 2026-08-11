@@ -12,6 +12,7 @@ import { CustomerMessage } from './customer/customer-message.entity.js';
 import { SkinAnalysis } from './skin-analysis/skin-analysis.entity.js';
 import { Order } from './order/order.entity.js';
 import { Setting } from './settings/setting.entity.js';
+import { AdminNotification } from './notification/admin-notification.entity.js';
 import { AdminUserModule } from './admin-user/admin-user.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SeedModule } from './seed/seed.module.js';
@@ -25,6 +26,7 @@ import { SkinAnalysisModule } from './skin-analysis/skin-analysis.module.js';
 import { OrderModule } from './order/order.module.js';
 import { ShopModule } from './shop/shop.module.js';
 import { SettingsModule } from './settings/settings.module.js';
+import { NotificationModule } from './notification/notification.module.js';
 
 @Module({
   imports: [
@@ -39,6 +41,7 @@ import { SettingsModule } from './settings/settings.module.js';
       SkinAnalysis,
       Order,
       Setting,
+      AdminNotification,
     ]),
 
     TypeOrmModule.forRootAsync({
@@ -63,6 +66,7 @@ import { SettingsModule } from './settings/settings.module.js';
               SkinAnalysis,
               Order,
               Setting,
+              AdminNotification,
             ],
             synchronize: true,
             ssl: { rejectUnauthorized: false },
@@ -89,6 +93,7 @@ import { SettingsModule } from './settings/settings.module.js';
             SkinAnalysis,
             Order,
             Setting,
+            AdminNotification,
           ],
           synchronize: true,
         };
@@ -108,6 +113,7 @@ import { SettingsModule } from './settings/settings.module.js';
     OrderModule,
     ShopModule,
     SettingsModule,
+    NotificationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

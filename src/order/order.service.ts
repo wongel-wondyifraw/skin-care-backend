@@ -10,6 +10,7 @@ import { DataSource, Repository } from 'typeorm';
 import { Order, OrderStatus } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 
 export interface PaginatedResult<T> {
@@ -36,6 +37,7 @@ export class OrderService {
     private readonly dataSource: DataSource,
     @Inject(forwardRef(() => TelegramService))
     private readonly telegramService: TelegramService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   private hydrateQuery() {
@@ -205,7 +207,14 @@ export class OrderService {
       return saved.id;
     });
 
-    return this.findOne(savedId);
+    const created = await this.findOne(savedId);
+    void this.notifyAdminsOrderPlaced(created);
+    return created;
+  }
+
+  async cancelForCustomer(id: string, customerId: string): Promise<Order> {
+    await this.findOneForCustomer(id, customerId);
+    return this.updateStatus(id, 'cancelled', { cancelledBy: 'customer' });
   }
 
   /**
@@ -213,7 +222,11 @@ export class OrderService {
    * pending → delivered: keep reservation, notify customer (non-blocking)
    * pending → cancelled: restore reserved stock
    */
-  async updateStatus(id: string, status: OrderStatus): Promise<Order> {
+  async updateStatus(
+    id: string,
+    status: OrderStatus,
+    meta?: { cancelledBy?: 'customer' | 'admin' },
+  ): Promise<Order> {
     if (status !== 'delivered' && status !== 'cancelled') {
       throw new BadRequestException('Status must be delivered or cancelled');
     }
@@ -253,6 +266,17 @@ export class OrderService {
 
     if (status === 'delivered') {
       void this.notifyCustomerDelivered(updated);
+      void this.notifyAdminsOrderDelivered(updated);
+    }
+
+    if (status === 'cancelled') {
+      void this.notifyAdminsOrderCancelled(
+        updated,
+        meta?.cancelledBy ?? 'admin',
+      );
+      if (meta?.cancelledBy === 'customer') {
+        void this.notifyCustomerOrderCancelled(updated);
+      }
     }
 
     return updated;
@@ -309,6 +333,61 @@ export class OrderService {
       `Thank you for shopping with Medaf Skin Care! 🌿`;
 
     await this.telegramService.sendMessageSafe(String(telegramId), text);
+  }
+
+  private async notifyCustomerOrderCancelled(order: Order): Promise<void> {
+    const telegramId = order.customer?.telegramId;
+    if (telegramId == null) return;
+    const productName = order.product?.name ?? 'your product';
+    const name = order.customer?.fullName ?? 'there';
+    const text =
+      `Order cancelled, ${name}.\n\n` +
+      `${productName} × ${order.quantity ?? 1} was cancelled.\n` +
+      `If this was a mistake, you can order again from the shop.`;
+    await this.telegramService.sendMessageSafe(String(telegramId), text);
+  }
+
+  private async notifyAdminsOrderPlaced(order: Order): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    const qty = order.quantity ?? 1;
+    const total = (Number(order.cost) || 0) * qty;
+    await this.notificationService.create({
+      type: 'order_placed',
+      title: 'New order placed',
+      body: `${customer} ordered ${product} × ${qty} · ${total.toFixed(2)} ETB`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
+  }
+
+  private async notifyAdminsOrderCancelled(
+    order: Order,
+    cancelledBy: 'customer' | 'admin',
+  ): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    const who =
+      cancelledBy === 'customer' ? 'Customer cancelled' : 'Order cancelled';
+    await this.notificationService.create({
+      type: 'order_cancelled',
+      title: who,
+      body: `${customer} · ${product} × ${order.quantity ?? 1}`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
+  }
+
+  private async notifyAdminsOrderDelivered(order: Order): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    await this.notificationService.create({
+      type: 'order_delivered',
+      title: 'Order delivered',
+      body: `${customer} · ${product} × ${order.quantity ?? 1}`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
   }
 
   async remove(id: string): Promise<void> {

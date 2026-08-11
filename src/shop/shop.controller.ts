@@ -6,6 +6,7 @@ import {
   HttpStatus,
   Param,
   ParseUUIDPipe,
+  Patch,
   Post,
   Query,
   Req,
@@ -186,6 +187,15 @@ export class ShopController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     return this.orderService.findOneForCustomer(id, req.user.id);
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Patch('orders/:id/cancel')
+  cancelOrder(
+    @Req() req: { user: ShopCustomer },
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.orderService.cancelForCustomer(id, req.user.id);
   }
 
   @UseGuards(CustomerJwtAuthGuard)
