@@ -30,4 +30,9 @@ export class LocationController {
 
     return this.locationIqService.calculateDeliveryFee(lat, lon);
   }
+
+  @Get('config')
+  getConfig() {
+    return { key: process.env.LOCATIONIQ_API_KEY || '' };
+  }
 }

@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   forwardRef,
 } from '@nestjs/common';
@@ -13,6 +14,7 @@ import { TelegramService } from '../telegram/telegram.service.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { VerifyEtService } from '../payment/verify-et.service.js';
+import { GeminiService } from '../telegram/gemini.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 
 export interface PaginatedResult<T> {
@@ -43,6 +45,8 @@ export interface CreateOrderCustomerOptions {
 
 @Injectable()
 export class OrderService {
+  private readonly logger = new Logger(OrderService.name);
+
   constructor(
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
@@ -56,7 +60,10 @@ export class OrderService {
     private readonly settingsService: SettingsService,
     @Inject(forwardRef(() => VerifyEtService))
     private readonly verifyEtService: VerifyEtService,
-  ) {}
+    @Inject(forwardRef(() => GeminiService))
+    private readonly geminiService: GeminiService,
+  ) {
+}
 
   private hydrateQuery() {
     return this.orderRepository
@@ -422,9 +429,24 @@ export class OrderService {
     totalAdvance: number,
   ): Promise<void> {
     try {
+      let extractedTxId = referenceCode;
+      
+      try {
+        const geminiInput = referenceCode.startsWith('http')
+          ? { url: referenceCode, paymentMethod }
+          : { text: referenceCode, paymentMethod };
+        const ext = await this.geminiService.extractTransactionNumber(geminiInput);
+        if (ext) {
+          extractedTxId = ext;
+          this.logger.log(`Extracted TX ID: ${ext} from evidence.`);
+        }
+      } catch (err) {
+        this.logger.warn(`Failed to extract TX ID: ${err}`);
+      }
+
       const result = await this.verifyEtService.verify({
         paymentMethod,
-        referenceCode,
+        referenceCode: extractedTxId,
         expectedAmount: totalAdvance,
       });
 

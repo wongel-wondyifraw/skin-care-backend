@@ -326,9 +326,6 @@ export class GeminiService {
     return response;
   }
 
-  /**
-   * Remove markdown formatting characters from AI response.
-   */
   private cleanMarkdown(text: string): string {
     return text
       .replace(/\*\*/g, '')
@@ -338,5 +335,51 @@ export class GeminiService {
       .replace(/_{2,}/g, '')
       .replace(/~~/g, '')
       .trim();
+  }
+
+  /**
+   * Extract transaction reference number from a photo buffer or text SMS.
+   */
+  async extractTransactionNumber(input: { url?: string; buffer?: Buffer; text?: string; paymentMethod: 'bank' | 'telebirr' }): Promise<string | null> {
+    const prompt = `Extract ONLY the transaction reference number from this ${input.paymentMethod} payment evidence.
+If there are multiple numbers, find the one that looks like a transaction ID / reference code (usually alphanumeric or a long number).
+Return EXACTLY the transaction number and nothing else. No prefixes, no explanations. If you cannot find any transaction number, return "NOT_FOUND".`;
+
+    try {
+      let buffer = input.buffer;
+      if (input.url && input.url.startsWith('http')) {
+        const res = await fetch(input.url, {
+          signal: AbortSignal.timeout(20000),
+        });
+        if (res.ok) {
+          buffer = Buffer.from(await res.arrayBuffer());
+        }
+      }
+
+      if (buffer) {
+        const result = await this.model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: buffer.toString('base64'),
+              mimeType: 'image/jpeg',
+            },
+          },
+        ]);
+        const text = result.response.text().trim();
+        return text === 'NOT_FOUND' ? null : text;
+      } else if (input.text) {
+        const result = await this.model.generateContent([
+          prompt,
+          input.text,
+        ]);
+        const text = result.response.text().trim();
+        return text === 'NOT_FOUND' ? null : text;
+      }
+    } catch (err) {
+      this.logger.error(`Failed to extract transaction number via Gemini: ${err}`);
+      return null;
+    }
+    return null;
   }
 }

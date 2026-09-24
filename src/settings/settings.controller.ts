@@ -90,10 +90,6 @@ export class SettingsController {
     return this.settingsService.setDeliveryRate(body);
   }
 
-  @Get('locationiq-key')
-  getLocationIqKey() {
-    return { key: process.env.LOCATIONIQ_API_KEY || '' };
-  }
 
   @Get('payment-info')
   getPaymentInfo() {
