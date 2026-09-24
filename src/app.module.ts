@@ -32,6 +32,7 @@ import { SettingsModule } from './settings/settings.module.js';
 import { NotificationModule } from './notification/notification.module.js';
 import { CartModule } from './cart/cart.module.js';
 import { PickupLocationModule } from './pickup-location/pickup-location.module.js';
+import { PaymentModule } from './payment/payment.module.js';
 
 @Module({
   imports: [
@@ -128,6 +129,7 @@ import { PickupLocationModule } from './pickup-location/pickup-location.module.j
     NotificationModule,
     CartModule,
     PickupLocationModule,
+    PaymentModule,
   ],
   controllers: [AppController],
   providers: [AppService],

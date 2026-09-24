@@ -98,6 +98,18 @@ export class Order {
   @Column({ type: 'timestamptz', nullable: true })
   paymentVerifiedAt: Date | null;
 
+  /** Verify.ET automated verification request ID */
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  verifyEtRequestId: string | null;
+
+  /** Verify.ET verification outcome */
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  verifyEtStatus: string | null;
+
+  /** Full Verify.ET response for audit */
+  @Column({ type: 'jsonb', nullable: true })
+  verifyEtRawResponse: Record<string, unknown> | null;
+
   @Index()
   @CreateDateColumn()
   createdAt: Date;

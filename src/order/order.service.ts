@@ -12,6 +12,7 @@ import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { VerifyEtService } from '../payment/verify-et.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 
 export interface PaginatedResult<T> {
@@ -50,6 +51,7 @@ export class OrderService {
     private readonly notificationService: NotificationService,
     @Inject(forwardRef(() => SettingsService))
     private readonly settingsService: SettingsService,
+    private readonly verifyEtService: VerifyEtService,
   ) {}
 
   private hydrateQuery() {
@@ -222,6 +224,17 @@ export class OrderService {
       totalAdvance,
       deliveryFee,
     );
+
+    // Attempt automatic payment verification if evidence was provided
+    if (opts.paymentEvidence && opts.paymentMethod) {
+      void this.autoVerifyPayment(
+        created,
+        opts.paymentMethod as 'bank' | 'telebirr',
+        opts.paymentEvidence,
+        totalAdvance,
+      );
+    }
+
     return created;
   }
 
@@ -336,6 +349,15 @@ export class OrderService {
 
     const updated = await this.findOne(order.id);
     void this.notifyAdminsPaymentSubmitted(updated);
+
+    // Attempt automatic verification
+    void this.autoVerifyPayment(
+      [updated],
+      evidence.paymentMethod,
+      evidence.paymentEvidence,
+      Number(updated.advancePaymentAmount) || 0,
+    );
+
     return updated;
   }
 
@@ -352,6 +374,80 @@ export class OrderService {
     order.paymentSubmittedAt = null;
     await this.orderRepository.save(order);
     return this.findOne(orderId);
+  }
+
+  async triggerAutoVerify(orderId: string): Promise<Order> {
+    const order = await this.findOne(orderId);
+
+    if (!order.paymentEvidence || !order.paymentMethod) {
+      throw new BadRequestException('No payment evidence to verify');
+    }
+    if (order.status !== 'payment_submitted') {
+      throw new BadRequestException(
+        `Order is ${order.status}, not payment_submitted`,
+      );
+    }
+
+    await this.autoVerifyPayment(
+      [order],
+      order.paymentMethod as 'bank' | 'telebirr',
+      order.paymentEvidence,
+      Number(order.advancePaymentAmount) || 0,
+    );
+
+    return this.findOne(orderId);
+  }
+
+  /**
+   * Attempt auto-verification via Verify.ET for a batch of orders
+   * that share the same payment evidence.
+   */
+  private async autoVerifyPayment(
+    orders: Order[],
+    paymentMethod: 'bank' | 'telebirr',
+    referenceCode: string,
+    totalAdvance: number,
+  ): Promise<void> {
+    try {
+      const result = await this.verifyEtService.verify({
+        paymentMethod,
+        referenceCode,
+        expectedAmount: totalAdvance,
+      });
+
+      // Store verification metadata on all orders in this batch
+      for (const order of orders) {
+        order.verifyEtRequestId = result.requestId ?? null;
+        order.verifyEtStatus = result.outcome;
+        order.verifyEtRawResponse =
+          (result.rawResponse as Record<string, unknown>) ?? null;
+        await this.orderRepository.save(order);
+      }
+
+      if (result.outcome === 'verified') {
+        // Auto-confirm all orders
+        for (const order of orders) {
+          await this.updateStatus(order.id, 'confirmed');
+        }
+        // Logger not defined here directly, using console or can just omit since order is confirmed.
+      } else if (result.outcome === 'queued') {
+        // Will be resolved by webhook — nothing to do now
+      } else if (result.outcome !== 'skipped') {
+        // Verification failed — notify admin for manual review
+        const first = orders[0];
+        const customer = first.customer?.fullName ?? 'Customer';
+        const product = first.product?.name ?? 'Product';
+        await this.notificationService.create({
+          type: 'payment_submitted',
+          title: 'Auto-verification failed',
+          body: `${customer} · ${product} — ${result.failureReason || result.outcome}. Manual review needed.`,
+          orderId: first.id,
+          href: '/admin/orders',
+        });
+      }
+    } catch {
+      // Silently fail — orders stay in payment_submitted for manual review
+    }
   }
 
   /**

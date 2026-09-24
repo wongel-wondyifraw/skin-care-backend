@@ -65,6 +65,11 @@ export class OrderController {
     return this.orderService.verifyPayment(id);
   }
 
+  @Patch(':id/auto-verify')
+  async autoVerify(@Param('id', ParseUUIDPipe) id: string) {
+    return this.orderService.triggerAutoVerify(id);
+  }
+
   @Patch(':id/reject-payment')
   rejectPayment(@Param('id', ParseUUIDPipe) id: string) {
     return this.orderService.rejectPayment(id);
