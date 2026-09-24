@@ -13,6 +13,8 @@ import { Type } from 'class-transformer';
 
 export const SHOP_TRENDING_KEY = 'shop_trending_product_ids';
 export const DELIVERY_ZONES_KEY = 'delivery_zones';
+export const DELIVERY_ORIGIN_KEY = 'delivery_origin';
+export const DELIVERY_RATE_KEY = 'delivery_rate';
 export const SUPPORT_PHONE_KEY = 'support_phone';
 export const PAYMENT_INFO_KEY = 'payment_info';
 export const MAX_TRENDING_PRODUCTS = 5;
@@ -28,6 +30,28 @@ export class DeliveryZone {
   @IsArray()
   @IsString({ each: true })
   keywords: string[];
+}
+
+export class DeliveryOrigin {
+  @IsNumber()
+  lat: number;
+
+  @IsNumber()
+  lon: number;
+
+  @IsString()
+  displayAddress: string;
+}
+
+export class DeliveryRate {
+  @IsNumber()
+  ratePerKm: number;
+
+  @IsNumber()
+  minFee: number;
+
+  @IsNumber()
+  maxRadiusKm: number;
 }
 
 export class BankAccountInfo {
@@ -72,7 +96,13 @@ export class SettingsService {
   }
 
   async setValue(key: string, value: string): Promise<void> {
-    await this.settingRepository.save({ key, value });
+    const existing = await this.settingRepository.findOne({ where: { key } });
+    if (existing) {
+      existing.value = value;
+      await this.settingRepository.save(existing);
+    } else {
+      await this.settingRepository.save({ key, value });
+    }
   }
 
   async getTrendingProductIds(): Promise<string[]> {
@@ -143,6 +173,48 @@ export class SettingsService {
     }
 
     return { zone: 'Other Locations', fee: 350 };
+  }
+
+  async getDeliveryOrigin(): Promise<DeliveryOrigin> {
+    const raw = await this.getValue(DELIVERY_ORIGIN_KEY);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        // fallback
+      }
+    }
+    return {
+      lat: 9.0192,
+      lon: 38.7525,
+      displayAddress: 'Addis Ababa',
+    };
+  }
+
+  async setDeliveryOrigin(origin: DeliveryOrigin): Promise<DeliveryOrigin> {
+    await this.setValue(DELIVERY_ORIGIN_KEY, JSON.stringify(origin));
+    return origin;
+  }
+
+  async getDeliveryRate(): Promise<DeliveryRate> {
+    const raw = await this.getValue(DELIVERY_RATE_KEY);
+    if (raw) {
+      try {
+        return JSON.parse(raw);
+      } catch {
+        // fallback
+      }
+    }
+    return {
+      ratePerKm: 25,
+      minFee: 50,
+      maxRadiusKm: 30,
+    };
+  }
+
+  async setDeliveryRate(rate: DeliveryRate): Promise<DeliveryRate> {
+    await this.setValue(DELIVERY_RATE_KEY, JSON.stringify(rate));
+    return rate;
   }
 
   async getPaymentInfo(): Promise<PaymentInfo> {

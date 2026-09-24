@@ -17,6 +17,12 @@ export class PickupLocation {
   @Column({ type: 'text' })
   address: string;
 
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  lon: number | null;
+
   @Column({ type: 'boolean', default: true })
   enabled: boolean;
 

@@ -32,6 +32,12 @@ export class Customer {
   @Column({ type: 'text' })
   address: string;
 
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  locationLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  locationLon: number | null;
+
   /** Nullable — user may pick a skin type that doesn't match any in DB */
   @ManyToOne(() => SkinType, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'skinTypeId' })

@@ -1,4 +1,12 @@
-import { Body, Controller, HttpCode, Logger, Post } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  HttpCode,
+  Logger,
+  Post,
+  Inject,
+  forwardRef,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order } from '../order/order.entity.js';
@@ -13,6 +21,7 @@ export class VerifyEtWebhookController {
   constructor(
     @InjectRepository(Order)
     private readonly orderRepository: Repository<Order>,
+    @Inject(forwardRef(() => OrderService))
     private readonly orderService: OrderService,
     private readonly verifyEtService: VerifyEtService,
     private readonly notificationService: NotificationService,

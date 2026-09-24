@@ -174,9 +174,10 @@ export class GeminiService {
     let prompt =
       `You are analyzing a customer's facial photo for Medaf Skin Care.\n\n` +
       `STEP 1 — PHOTO QUALITY GATE:\n` +
-      `Reject the photo ONLY if it is impossible to analyze the skin:\n` +
-      `- Not a human face, completely blurry, entirely pitch black, or obscured by heavy opaque filters/masks.\n` +
-      `- Do NOT reject for minor things like a slightly cropped forehead, mild shadows, or everyday light makeup.\n\n` +
+      `Reject the photo ONLY if it is completely impossible to analyze the skin:\n` +
+      `- Not a human face, extremely blurry, entirely pitch black, or obscured by heavy opaque masks.\n` +
+      `- Do NOT reject for minor things like a cropped forehead, shadows, everyday makeup, non-ideal lighting, glasses, or partial face.\n` +
+      `- If you can see even some parts of the facial skin reasonably well, accept it.\n\n` +
       `If rejected, reply with EXACTLY this format and nothing else before the message:\n` +
       `PHOTO_UNCLEAR\n` +
       `Then 1-3 short friendly sentences telling the user what to fix ` +
@@ -235,10 +236,14 @@ export class GeminiService {
       const raw = this.cleanMarkdown(rawText);
       const upperRaw = raw.toUpperCase();
 
-      const isUsable = upperRaw.includes('PHOTO_OK') && !upperRaw.includes('PHOTO_UNCLEAR');
-      
+      const isUsable =
+        upperRaw.includes('PHOTO_OK') && !upperRaw.includes('PHOTO_UNCLEAR');
+
       // Strip out the control flags to get just the text response
-      const rest = raw.replace(/PHOTO_OK/gi, '').replace(/PHOTO_UNCLEAR/gi, '').trim();
+      const rest = raw
+        .replace(/PHOTO_OK/gi, '')
+        .replace(/PHOTO_UNCLEAR/gi, '')
+        .trim();
 
       if (!isUsable) {
         const retryMessage =

@@ -974,8 +974,10 @@ export class TelegramUpdate {
   @On('message')
   async onMessage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
-    const message = ctx.message as Message.TextMessage & Message.ContactMessage;
-    const text = ('text' in message ? message.text : '').trim();
+    const message = ctx.message as Message.TextMessage &
+      Message.ContactMessage &
+      Message.LocationMessage;
+    const text = ('text' in message && message.text ? message.text : '').trim();
 
     // WebApp orders are created via the shop API (not sendData / web_app_data).
     // Bot-native orders continue below through the Order buttons + chat flow.
@@ -1589,14 +1591,32 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Step 3: Payment evidence (text message) ──
+    // ── Step 3: Select payment method ──
+    if (session.step === 'awaiting_payment_method') {
+      if (text.includes('CBE') || text.includes('Bank')) {
+        session.paymentMethod = 'bank';
+        session.step = 'awaiting_payment_evidence';
+        await ctx.reply(
+          '📸 Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
+          { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
+        );
+      } else if (text.includes('Telebirr')) {
+        session.paymentMethod = 'telebirr';
+        session.step = 'awaiting_payment_evidence';
+        await ctx.reply(
+          '📸 Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
+          { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
+        );
+      } else {
+        await ctx.reply('Please choose how you paid using the buttons below.');
+      }
+      return;
+    }
+
+    // ── Step 4: Payment evidence (text message) ──
     if (session.step === 'awaiting_payment_evidence') {
       const evidence = text.trim();
-      const lower = evidence.toLowerCase();
-      const method =
-        lower.startsWith('09') || lower.includes('telebirr')
-          ? 'telebirr'
-          : 'bank';
+      const method = session.paymentMethod ?? 'telebirr'; // fallback
       await this.completeBotOrder(ctx, chatId, session, evidence, method);
       return;
     }
@@ -1616,7 +1636,7 @@ export class TelegramUpdate {
 
     session.totalCost = grandTotal;
     session.advancePaymentAmount = advance;
-    session.step = 'awaiting_payment_evidence';
+    session.step = 'awaiting_payment_method';
     this.orderSessions.set(chatId, session);
 
     const paymentInfo = await this.settingsService.getPaymentInfo();
@@ -1651,12 +1671,15 @@ export class TelegramUpdate {
       `   • Phone: \`${telebirr.phoneNumber}\`\n` +
       `   • Name: ${telebirr.accountName}\n\n` +
       `📸 *Next Step:*\n` +
-      `Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.`;
+      `How did you make your payment?`;
 
     await ctx.reply(message, {
       parse_mode: 'Markdown',
       reply_markup: {
-        keyboard: [[{ text: '❌ Cancel order' }]],
+        keyboard: [
+          [{ text: '🏦 Paid via CBE' }, { text: '📱 Paid via Telebirr' }],
+          [{ text: '❌ Cancel order' }],
+        ],
         resize_keyboard: true,
         one_time_keyboard: true,
       },
@@ -1697,7 +1720,8 @@ export class TelegramUpdate {
         );
       }
 
-      await this.completeBotOrder(ctx, chatId, session, photoUrl, 'screenshot');
+      const method = session.paymentMethod ?? 'bank';
+      await this.completeBotOrder(ctx, chatId, session, photoUrl, method);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to process payment photo: ${message}`);
@@ -1795,7 +1819,9 @@ export class TelegramUpdate {
     ctx: Context,
     chatId: string,
     session: ProfileEditSession,
-    message: Message.TextMessage & Message.ContactMessage,
+    message: Message.TextMessage &
+      Message.ContactMessage &
+      Message.LocationMessage,
   ) {
     const text = ('text' in message ? message.text : '').trim();
 
@@ -1873,9 +1899,18 @@ export class TelegramUpdate {
         session.step = 'awaiting_address';
         session.field = 'address';
         this.profileEditSessions.set(chatId, session);
-        await ctx.reply(`What is your new delivery address?`, {
-          reply_markup: { remove_keyboard: true },
-        });
+        await ctx.reply(
+          `What is your new delivery location? Send us your GPS location or type your address.`,
+          {
+            reply_markup: {
+              keyboard: [
+                [{ text: '📍 Share Location', request_location: true }],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          },
+        );
         return;
       }
 
@@ -2007,16 +2042,33 @@ export class TelegramUpdate {
     ctx: Context,
     chatId: string,
     session: ProfileEditSession,
-    message: Message.TextMessage,
+    message: Message.TextMessage & Message.LocationMessage,
   ) {
-    const address = message.text?.trim();
+    let address = '';
+    let lat: number | undefined;
+    let lon: number | undefined;
+
+    if ('location' in message && message.location) {
+      lat = message.location.latitude;
+      lon = message.location.longitude;
+      address = `GPS Location: ${lat}, ${lon}`;
+    } else if ('text' in message && message.text) {
+      address = message.text.trim();
+    }
+
     if (!address || address.length < 5) {
-      await ctx.reply('Please enter a valid address (at least 5 characters).');
+      await ctx.reply(
+        'Please enter a valid address (at least 5 characters) or share your location.',
+      );
       return;
     }
 
     try {
-      await this.customerService.update(session.customerId, { address });
+      await this.customerService.update(session.customerId, {
+        address,
+        locationLat: lat ?? null,
+        locationLon: lon ?? null,
+      });
       this.profileEditSessions.delete(chatId);
       await ctx.reply(`✅ Your address has been updated to: ${address}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
@@ -2261,9 +2313,16 @@ export class TelegramUpdate {
       session.step = 'awaiting_address';
       this.sessions.set(chatId, session);
 
-      await ctx.reply(`Got it! 📞\n\nFinally, what is your delivery address?`, {
-        reply_markup: { remove_keyboard: true },
-      });
+      await ctx.reply(
+        `Got it! 📞\n\nFinally, what is your delivery location? Send us your GPS location or type your address.`,
+        {
+          reply_markup: {
+            keyboard: [[{ text: '📍 Share Location', request_location: true }]],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
       return;
     }
 
@@ -2304,8 +2363,14 @@ export class TelegramUpdate {
 
     await ctx.reply(
       `Got it — ${match ? match.name : input} skin! 🌿\n\n` +
-        `Almost done! What is your delivery address?`,
-      { reply_markup: { remove_keyboard: true } },
+        `Almost done! What is your delivery location? Send us your GPS location or type your address.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: '📍 Share Location', request_location: true }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      },
     );
   }
 
@@ -2313,15 +2378,30 @@ export class TelegramUpdate {
     ctx: Context,
     chatId: string,
     session: RegistrationSession,
-    message: Message.TextMessage,
+    message: Message.TextMessage & Message.LocationMessage,
   ) {
-    const address = message.text?.trim();
+    let address = '';
+    let lat: number | undefined;
+    let lon: number | undefined;
+
+    if ('location' in message && message.location) {
+      lat = message.location.latitude;
+      lon = message.location.longitude;
+      address = `GPS Location: ${lat}, ${lon}`; // Or reverse geocode if desired
+    } else if ('text' in message && message.text) {
+      address = message.text.trim();
+    }
+
     if (!address || address.length < 5) {
-      await ctx.reply('Please enter a valid address (at least 5 characters).');
+      await ctx.reply(
+        'Please enter a valid address (at least 5 characters) or share your location.',
+      );
       return;
     }
 
     session.address = address;
+    session.locationLat = lat;
+    session.locationLon = lon;
     session.step = 'complete';
     this.sessions.set(chatId, session);
 
@@ -2331,6 +2411,8 @@ export class TelegramUpdate {
         fullName: session.fullName!,
         phone: session.phone!,
         address: session.address,
+        locationLat: session.locationLat,
+        locationLon: session.locationLon,
         skinTypeId: session.skinTypeId ?? null,
         telegramUsername:
           session.telegramUsername ?? ctx.from?.username ?? null,

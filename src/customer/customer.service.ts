@@ -10,6 +10,8 @@ export interface CreateCustomerDto {
   address: string;
   skinTypeId: string | null;
   telegramUsername?: string | null;
+  locationLat?: number | null;
+  locationLon?: number | null;
 }
 
 export interface CustomerListQuery {
@@ -101,6 +103,8 @@ export class CustomerService {
       address: dto.address,
       skinTypeId: dto.skinTypeId,
       telegramUsername: dto.telegramUsername?.trim() || null,
+      locationLat: dto.locationLat,
+      locationLon: dto.locationLon,
     });
     const saved = await this.repo.save(customer);
     this.logger.log(
@@ -115,7 +119,13 @@ export class CustomerService {
     data: Partial<
       Pick<
         Customer,
-        'fullName' | 'phone' | 'address' | 'skinTypeId' | 'telegramUsername'
+        | 'fullName'
+        | 'phone'
+        | 'address'
+        | 'skinTypeId'
+        | 'telegramUsername'
+        | 'locationLat'
+        | 'locationLon'
       >
     >,
   ): Promise<Customer> {

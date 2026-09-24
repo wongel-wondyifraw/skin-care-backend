@@ -12,6 +12,8 @@ import {
   SettingsService,
   DeliveryZone,
   PaymentInfo,
+  DeliveryOrigin,
+  DeliveryRate,
 } from './settings.service.js';
 
 class UpdateShopSettingsDto {
@@ -66,6 +68,31 @@ export class SettingsController {
   @Put('delivery-zones')
   setDeliveryZones(@Body() body: SetDeliveryZonesDto) {
     return this.settingsService.setDeliveryZones(body.zones);
+  }
+
+  @Get('delivery-origin')
+  getDeliveryOrigin() {
+    return this.settingsService.getDeliveryOrigin();
+  }
+
+  @Put('delivery-origin')
+  setDeliveryOrigin(@Body() body: DeliveryOrigin) {
+    return this.settingsService.setDeliveryOrigin(body);
+  }
+
+  @Get('delivery-rate')
+  getDeliveryRate() {
+    return this.settingsService.getDeliveryRate();
+  }
+
+  @Put('delivery-rate')
+  setDeliveryRate(@Body() body: DeliveryRate) {
+    return this.settingsService.setDeliveryRate(body);
+  }
+
+  @Get('locationiq-key')
+  getLocationIqKey() {
+    return { key: process.env.LOCATIONIQ_API_KEY || '' };
   }
 
   @Get('payment-info')

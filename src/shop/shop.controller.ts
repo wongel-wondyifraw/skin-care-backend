@@ -39,6 +39,7 @@ import { CustomerService } from '../customer/customer.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { CartService } from '../cart/cart.service.js';
 import { PickupLocationService } from '../pickup-location/pickup-location.service.js';
+import { LocationIqService } from '../location/locationiq.service.js';
 import { CustomerJwtAuthGuard } from './customer-jwt-auth.guard.js';
 import { ShopAuthService } from './shop-auth.service.js';
 import { customerInitials } from './telegram-webapp.js';
@@ -75,6 +76,21 @@ class CreateShopOrdersDto {
   @IsOptional()
   @IsString()
   deliveryAddress?: string;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  deliveryLat?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  deliveryLon?: number;
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsNumber()
+  deliveryDistanceKm?: number;
 
   @IsOptional()
   @IsString()
@@ -141,6 +157,7 @@ export class ShopController {
     private readonly settingsService: SettingsService,
     private readonly cartService: CartService,
     private readonly pickupLocationService: PickupLocationService,
+    private readonly locationIqService: LocationIqService,
     private readonly cloudinaryService: CloudinaryService,
   ) {}
 
@@ -161,6 +178,8 @@ export class ShopController {
       telegramId: Number(customer.telegramId),
       phone: customer.phone,
       address: customer.address,
+      locationLat: customer.locationLat,
+      locationLon: customer.locationLon,
       skinType: customer.skinType
         ? { id: customer.skinType.id, name: customer.skinType.name }
         : null,
@@ -312,8 +331,14 @@ export class ShopController {
 
   @UseGuards(CustomerJwtAuthGuard)
   @Get('delivery-fee')
-  getDeliveryFee(@Query('address') address?: string) {
-    return this.settingsService.calculateDeliveryFee(address);
+  getDeliveryFee(@Query('lat') lat?: string, @Query('lon') lon?: string) {
+    if (lat && lon) {
+      return this.locationIqService.calculateDeliveryFee(
+        parseFloat(lat),
+        parseFloat(lon),
+      );
+    }
+    return { distanceKm: 0, fee: 350, durationMinutes: 0, withinRadius: true };
   }
 
   @UseGuards(CustomerJwtAuthGuard)

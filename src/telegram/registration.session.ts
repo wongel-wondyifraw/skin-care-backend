@@ -27,6 +27,8 @@ export interface RegistrationSession {
   phone?: string;
   skinTypeId?: string | null;
   address?: string;
+  locationLat?: number;
+  locationLon?: number;
 }
 
 export class RegistrationSessionStore {
@@ -93,6 +95,8 @@ export interface ProfileEditSession {
   customerId: string; // DB id of the customer being edited
   field?: 'name' | 'phone' | 'skinType' | 'address';
   newValue?: string;
+  locationLat?: number;
+  locationLon?: number;
 }
 
 export class ProfileEditSessionStore {
@@ -122,6 +126,7 @@ export type OrderSessionStep =
   | 'awaiting_fulfilment_type'
   | 'awaiting_delivery_address'
   | 'awaiting_pickup_selection'
+  | 'awaiting_payment_method'
   | 'awaiting_payment_evidence';
 
 export interface OrderSession {
@@ -140,6 +145,7 @@ export interface OrderSession {
   deliveryFee?: number;
   advancePaymentAmount?: number;
   totalCost?: number;
+  paymentMethod?: string;
 }
 
 export class OrderSessionStore {

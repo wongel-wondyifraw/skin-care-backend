@@ -52,6 +52,15 @@ export class Order {
   @Column({ type: 'text', nullable: true })
   deliveryAddress: string | null;
 
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  deliveryLat: number | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
+  deliveryLon: number | null;
+
+  @Column({ type: 'decimal', precision: 6, scale: 2, nullable: true })
+  deliveryDistanceKm: number | null;
+
   @Index()
   @Column({ type: 'varchar', length: 20, default: 'pending' })
   status: OrderStatus;

@@ -31,6 +31,9 @@ export interface OrderListQuery {
 
 export interface CreateOrderCustomerOptions {
   deliveryAddress?: string | null;
+  deliveryLat?: number | null;
+  deliveryLon?: number | null;
+  deliveryDistanceKm?: number | null;
   fulfilmentType?: FulfilmentType;
   pickupLocationId?: string | null;
   deliveryFee?: number;
@@ -206,6 +209,9 @@ export class OrderService {
         cost: unitPrice,
         quantity,
         deliveryAddress: opts.deliveryAddress ?? null,
+        deliveryLat: opts.deliveryLat ?? null,
+        deliveryLon: opts.deliveryLon ?? null,
+        deliveryDistanceKm: opts.deliveryDistanceKm ?? null,
         status: initialStatus,
         fulfilmentType,
         pickupLocationId: opts.pickupLocationId ?? null,
@@ -266,6 +272,9 @@ export class OrderService {
     cost: number;
     quantity: number;
     deliveryAddress?: string | null;
+    deliveryLat?: number | null;
+    deliveryLon?: number | null;
+    deliveryDistanceKm?: number | null;
     status?: OrderStatus;
     fulfilmentType?: FulfilmentType;
     pickupLocationId?: string | null;
@@ -302,6 +311,9 @@ export class OrderService {
         cost: data.cost,
         quantity,
         deliveryAddress: data.deliveryAddress?.trim() || null,
+        deliveryLat: data.deliveryLat ?? null,
+        deliveryLon: data.deliveryLon ?? null,
+        deliveryDistanceKm: data.deliveryDistanceKm ?? null,
         status: data.status ?? 'awaiting_payment',
         stockReserved: true,
         fulfilmentType: data.fulfilmentType ?? 'delivery',
