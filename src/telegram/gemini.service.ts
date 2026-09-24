@@ -174,9 +174,9 @@ export class GeminiService {
     let prompt =
       `You are analyzing a customer's facial photo for Medaf Skin Care.\n\n` +
       `STEP 1 — PHOTO QUALITY GATE:\n` +
-      `Reject the photo if ANY of these are true:\n` +
-      `- not a human face, face too small/cropped, blurry, too dark or overexposed,\n` +
-      `- heavy filter/makeup hiding the skin, group photo, screenshot/text, or unrelated object.\n\n` +
+      `Reject the photo ONLY if it is impossible to analyze the skin:\n` +
+      `- Not a human face, completely blurry, entirely pitch black, or obscured by heavy opaque filters/masks.\n` +
+      `- Do NOT reject for minor things like a slightly cropped forehead, mild shadows, or everyday light makeup.\n\n` +
       `If rejected, reply with EXACTLY this format and nothing else before the message:\n` +
       `PHOTO_UNCLEAR\n` +
       `Then 1-3 short friendly sentences telling the user what to fix ` +
@@ -233,14 +233,14 @@ export class GeminiService {
       const response = await result.response;
       const rawText: string = String(response.text() || '');
       const raw = this.cleanMarkdown(rawText);
+      const upperRaw = raw.toUpperCase();
 
-      const firstLine = raw.split(/\r?\n/, 1)[0]?.trim().toUpperCase() ?? '';
-      const rest = raw.replace(/^[^\n]*\n?/, '').trim();
+      const isUsable = upperRaw.includes('PHOTO_OK') && !upperRaw.includes('PHOTO_UNCLEAR');
+      
+      // Strip out the control flags to get just the text response
+      const rest = raw.replace(/PHOTO_OK/gi, '').replace(/PHOTO_UNCLEAR/gi, '').trim();
 
-      if (
-        firstLine.includes('PHOTO_UNCLEAR') ||
-        !firstLine.includes('PHOTO_OK')
-      ) {
+      if (!isUsable) {
         const retryMessage =
           rest ||
           'Please send a clearer front-facing photo in good light — one face, no heavy filter.';
