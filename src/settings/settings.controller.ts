@@ -1,5 +1,12 @@
 import { Body, Controller, Get, Put, UseGuards } from '@nestjs/common';
-import { IsArray, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsArray,
+  IsOptional,
+  IsString,
+  IsUUID,
+  ValidateNested,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import {
   SettingsService,
@@ -15,14 +22,25 @@ class UpdateShopSettingsDto {
 
   @IsOptional()
   @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DeliveryZone)
   deliveryZones?: DeliveryZone[];
 
   @IsOptional()
+  @ValidateNested()
+  @Type(() => PaymentInfo)
   paymentInfo?: PaymentInfo;
 
   @IsOptional()
   @IsString()
   supportPhone?: string;
+}
+
+class SetDeliveryZonesDto {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DeliveryZone)
+  zones: DeliveryZone[];
 }
 
 @UseGuards(JwtAuthGuard)
@@ -46,7 +64,7 @@ export class SettingsController {
   }
 
   @Put('delivery-zones')
-  setDeliveryZones(@Body() body: { zones: DeliveryZone[] }) {
+  setDeliveryZones(@Body() body: SetDeliveryZonesDto) {
     return this.settingsService.setDeliveryZones(body.zones);
   }
 

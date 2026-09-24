@@ -2,6 +2,14 @@ import { BadRequestException, Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Setting } from './setting.entity.js';
+import {
+  IsString,
+  IsArray,
+  IsNumber,
+  ValidateNested,
+  IsNotEmpty,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 
 export const SHOP_TRENDING_KEY = 'shop_trending_product_ids';
 export const DELIVERY_ZONES_KEY = 'delivery_zones';
@@ -10,21 +18,45 @@ export const PAYMENT_INFO_KEY = 'payment_info';
 export const MAX_TRENDING_PRODUCTS = 5;
 
 export class DeliveryZone {
+  @IsString()
+  @IsNotEmpty()
   name: string;
+
+  @IsNumber()
   fee: number;
+
+  @IsArray()
+  @IsString({ each: true })
   keywords: string[];
 }
 
+export class BankAccountInfo {
+  @IsString()
+  bankName: string;
+
+  @IsString()
+  accountNumber: string;
+
+  @IsString()
+  accountName: string;
+}
+
+export class TelebirrInfo {
+  @IsString()
+  phoneNumber: string;
+
+  @IsString()
+  accountName: string;
+}
+
 export class PaymentInfo {
-  bankAccount: {
-    bankName: string;
-    accountNumber: string;
-    accountName: string;
-  };
-  telebirr: {
-    phoneNumber: string;
-    accountName: string;
-  };
+  @ValidateNested()
+  @Type(() => BankAccountInfo)
+  bankAccount: BankAccountInfo;
+
+  @ValidateNested()
+  @Type(() => TelebirrInfo)
+  telebirr: TelebirrInfo;
 }
 
 @Injectable()
