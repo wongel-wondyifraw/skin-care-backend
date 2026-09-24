@@ -4,7 +4,7 @@ import { SettingsService } from '../settings/settings.service.js';
 
 export interface VerifyEtRequest {
   paymentMethod: 'bank' | 'telebirr';
-  referenceCode: string; // The customer's transaction ID
+  referenceCode: string; // The customer's transaction ID (never a URL)
   expectedAmount: number; // The 50% advance amount
 }
 
@@ -14,26 +14,31 @@ export type VerifyEtOutcome =
   | 'amount_mismatch' // ❌ Amount paid < expected advance
   | 'receiver_mismatch' // ❌ Money didn't reach our account
   | 'duplicate' // ❌ Transaction already used for another order
-  | 'queued' // ⏳ Bank is slow, webhook will follow
+  | 'queued' // ⏳ Bank still processing after poll timeout
   | 'unsupported' // ⚠️ Bank not supported
-  | 'skipped'; // ⚠️ No API key configured, skip auto-verify
+  | 'skipped'; // ⚠️ No API key configured
 
 export interface VerifyEtResult {
   outcome: VerifyEtOutcome;
-  requestId?: string; // Verify.ET requestId (for webhook correlation)
-  amount?: number; // Verified transaction amount
-  senderName?: string; // Who sent the money
-  receiverMatched?: boolean; // Did money reach our account?
-  isFirstUse?: boolean; // Is this the first time this receipt is used?
+  requestId?: string;
+  amount?: number;
+  senderName?: string;
+  receiverMatched?: boolean;
+  isFirstUse?: boolean;
   rawResponse?: Record<string, unknown>;
-  failureReason?: string; // Human-readable reason for failure
+  failureReason?: string;
 }
+
+const SYNC_WAIT_MS = 20_000;
+const POLL_MAX_ATTEMPTS = 20;
+const POLL_DEFAULT_INTERVAL_MS = 1_500;
 
 @Injectable()
 export class VerifyEtService {
   private readonly logger = new Logger(VerifyEtService.name);
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly webhookUrl: string;
 
   constructor(
     private readonly configService: ConfigService,
@@ -44,28 +49,50 @@ export class VerifyEtService {
       'VERIFY_ET_BASE_URL',
       'https://verify.et',
     );
+    const explicit = (
+      this.configService.get<string>('VERIFY_ET_WEBHOOK_URL') || ''
+    ).trim();
+    const publicBase = (
+      this.configService.get<string>('TELEGRAM_WEBHOOK_URL') || ''
+    )
+      .trim()
+      .replace(/\/+$/, '');
+    this.webhookUrl =
+      explicit ||
+      (publicBase ? `${publicBase}/api/webhooks/verify-et` : '');
   }
 
-  /** Check if Verify.ET integration is configured */
   isEnabled(): boolean {
     return Boolean(this.apiKey && this.apiKey.length > 10);
   }
 
   /**
    * Verify a payment transaction.
-   * Returns a structured result — never throws on verification failures.
+   * Waits synchronously, then polls if queued. Never throws on verify failures.
    */
   async verify(request: VerifyEtRequest): Promise<VerifyEtResult> {
     if (!this.isEnabled()) {
       this.logger.warn(
-        'Verify.ET API key not configured — skipping auto-verification',
+        'Verify.ET API key not configured — refusing auto-verification',
       );
-      return { outcome: 'skipped' };
+      return {
+        outcome: 'failed',
+        failureReason:
+          'Payment verification is not configured. Please contact support.',
+      };
     }
 
-    // 1. Build the bank-specific payload using our stored settlement accounts
+    const ref = request.referenceCode.trim();
+    if (!ref || /^https?:\/\//i.test(ref)) {
+      return {
+        outcome: 'failed',
+        failureReason:
+          'A valid transaction reference is required (not a screenshot URL).',
+      };
+    }
+
     const paymentInfo = await this.settingsService.getPaymentInfo();
-    const body = this.buildPayload(request, paymentInfo);
+    const body = this.buildPayload({ ...request, referenceCode: ref }, paymentInfo);
     if (!body) {
       return {
         outcome: 'unsupported',
@@ -73,65 +100,143 @@ export class VerifyEtService {
       };
     }
 
-    // 2. Call Verify.ET with a 5-second sync wait
+    if (this.webhookUrl) {
+      body.webhookUrl = this.webhookUrl;
+    }
+
     try {
-      const res = await fetch(`${this.baseUrl}/api/verify?waitMs=5000`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': this.apiKey,
-        },
-        body: JSON.stringify(body),
-      });
-
-      const json = (await res.json()) as Record<string, unknown>;
-
-      // 202 Queued — bank is slow, webhook will follow
-      if (res.status === 202) {
-        this.logger.log(
-          `Verify.ET queued: requestId=${String(json.requestId)}`,
-        );
-        return {
-          outcome: 'queued',
-          requestId: String(json.requestId),
-          rawResponse: json,
-        };
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'x-api-key': this.apiKey,
+      };
+      if (this.webhookUrl) {
+        headers['X-Webhook-Url'] = this.webhookUrl;
       }
 
-      // Non-200 error
+      const res = await fetch(
+        `${this.baseUrl}/api/verify?waitMs=${SYNC_WAIT_MS}`,
+        {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(body),
+        },
+      );
+
+      const json = (await res.json()) as Record<string, unknown>;
+      const requestId =
+        typeof json.requestId === 'string' ? json.requestId : undefined;
+
+      // 202 Queued — poll until terminal or timeout
+      if (res.status === 202) {
+        this.logger.log(
+          `Verify.ET queued: requestId=${requestId ?? 'unknown'} — polling`,
+        );
+        if (!requestId) {
+          return {
+            outcome: 'queued',
+            rawResponse: json,
+            failureReason:
+              'Verification queued but no requestId returned. Please try again.',
+          };
+        }
+        return this.pollUntilDone(requestId, request.expectedAmount, json);
+      }
+
       if (!res.ok) {
         this.logger.warn(
           `Verify.ET error ${res.status}: ${String(json.message)}`,
         );
         return {
           outcome: 'failed',
+          requestId,
           rawResponse: json,
           failureReason: (json.message as string) || `HTTP ${res.status}`,
         };
       }
 
-      // 200 OK — parse the completed result
+      // 200 OK — completed inline
       return this.parseCompletedResponse(json, request.expectedAmount);
     } catch (err) {
       this.logger.error('Verify.ET network error', err);
       return {
-        outcome: 'skipped',
-        failureReason: 'Network error contacting Verify.ET',
+        outcome: 'failed',
+        failureReason:
+          'Could not reach the payment verification service. Please try again.',
       };
     }
   }
 
-  /** Parse a completed webhook or sync response */
+  /** Poll GET /api/verify/:requestId until completed/failed or attempts exhausted */
+  async pollUntilDone(
+    requestId: string,
+    expectedAmount: number,
+    initialRaw?: Record<string, unknown>,
+  ): Promise<VerifyEtResult> {
+    let pollAfterMs = POLL_DEFAULT_INTERVAL_MS;
+
+    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
+      await this.sleep(pollAfterMs);
+
+      try {
+        const res = await fetch(`${this.baseUrl}/api/verify/${requestId}`, {
+          headers: { 'x-api-key': this.apiKey },
+        });
+        const json = (await res.json()) as Record<string, unknown>;
+
+        const links = json.links as Record<string, unknown> | undefined;
+        if (typeof links?.pollAfterMs === 'number' && links.pollAfterMs > 0) {
+          pollAfterMs = Math.min(Number(links.pollAfterMs), 5_000);
+        }
+
+        const data = this.unwrapData(json);
+        const processingStatus = String(
+          data?.processingStatus ??
+            (json.verification as Record<string, unknown> | undefined)
+              ?.processingStatus ??
+            '',
+        ).toLowerCase();
+
+        if (processingStatus === 'failed') {
+          return {
+            outcome: 'failed',
+            requestId,
+            rawResponse: json,
+            failureReason:
+              (json.message as string) || 'Verification failed at the bank',
+          };
+        }
+
+        if (processingStatus === 'completed' || data?.verified === true) {
+          // Normalize so parseCompletedResponse can read amount / settlement
+          const envelope = Array.isArray(json.data)
+            ? json
+            : { ...json, data: data ? [data] : [], requestId };
+          return this.parseCompletedResponse(envelope, expectedAmount);
+        }
+      } catch (err) {
+        this.logger.warn(`Verify.ET poll attempt ${attempt + 1} failed: ${err}`);
+      }
+    }
+
+    return {
+      outcome: 'queued',
+      requestId,
+      rawResponse: initialRaw,
+      failureReason:
+        'Bank verification is taking longer than expected. Please try again in a minute.',
+    };
+  }
+
   parseCompletedResponse(
     json: Record<string, unknown>,
     expectedAmount: number,
   ): VerifyEtResult {
-    const data = Array.isArray(json.data) ? json.data[0] : json.data;
+    const data = this.unwrapData(json);
     if (!data) {
       return {
         outcome: 'failed',
         rawResponse: json,
-        failureReason: 'Empty data',
+        failureReason: 'Empty verification data',
       };
     }
 
@@ -139,10 +244,12 @@ export class VerifyEtService {
     const amount = Number(data.amount) || 0;
     const senderName = String(data.senderName || '');
     const settlement = data.settlementAccountMatch as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     const receiverMatched = settlement?.matched === true;
     const confirmation = data.confirmationHistory as
-      Record<string, unknown> | undefined;
+      | Record<string, unknown>
+      | undefined;
     const isFirstUse = confirmation?.isFirstConfirmation !== false;
     const requestId = typeof json.requestId === 'string' ? json.requestId : '';
 
@@ -155,7 +262,6 @@ export class VerifyEtService {
       rawResponse: json,
     };
 
-    // Check 1: Was the transaction valid at all?
     if (!verified) {
       return {
         ...base,
@@ -164,7 +270,6 @@ export class VerifyEtService {
       };
     }
 
-    // Check 2: Did the money arrive in OUR account?
     if (settlement && !receiverMatched) {
       const reason =
         typeof settlement.reason === 'string'
@@ -173,7 +278,6 @@ export class VerifyEtService {
       return { ...base, outcome: 'receiver_mismatch', failureReason: reason };
     }
 
-    // Check 3: Is this a duplicate / replay?
     if (confirmation && !isFirstUse) {
       const count = Number(confirmation.confirmationCount || 0);
       return {
@@ -183,7 +287,6 @@ export class VerifyEtService {
       };
     }
 
-    // Check 4: Did they pay enough? (allow 1 ETB tolerance for rounding)
     if (amount > 0 && amount < expectedAmount - 1) {
       return {
         ...base,
@@ -192,11 +295,21 @@ export class VerifyEtService {
       };
     }
 
-    // All checks pass
     return { ...base, outcome: 'verified' };
   }
 
-  /** Build the bank-specific Verify.ET request body */
+  private unwrapData(
+    json: Record<string, unknown>,
+  ): Record<string, unknown> | null {
+    if (Array.isArray(json.data)) {
+      return (json.data[0] as Record<string, unknown>) ?? null;
+    }
+    if (json.data && typeof json.data === 'object') {
+      return json.data as Record<string, unknown>;
+    }
+    return null;
+  }
+
   private buildPayload(
     request: VerifyEtRequest,
     paymentInfo: {
@@ -232,11 +345,14 @@ export class VerifyEtService {
     return null;
   }
 
+  private sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   async getDashboardData() {
     if (!this.isEnabled()) return null;
     const headers = { 'x-api-key': this.apiKey };
 
-    // Fetch from multiple Verify.ET endpoints in parallel
     const [uptime, metrics, overview, balance, history] = await Promise.all([
       fetch(`${this.baseUrl}/api/uptime`, { headers })
         .then((r) => r.json())

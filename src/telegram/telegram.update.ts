@@ -1743,27 +1743,46 @@ export class TelegramUpdate {
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     try {
+      const total = session.totalCost ?? session.cost * quantity;
+      const advance = session.advancePaymentAmount ?? total * 0.5;
+      const remaining = total - advance;
+
+      const v = await this.orderService.verifyEvidence(
+        paymentMethod as 'bank' | 'telebirr',
+        paymentEvidence,
+        advance,
+      );
+
+      const verifyResult = v.result;
+      if (verifyResult.outcome !== 'verified') {
+        throw new Error(
+          verifyResult.failureReason ||
+            `Payment could not be verified (${verifyResult.outcome})`,
+        );
+      }
+
       const order = await this.orderService.create({
         customerId: session.customerId,
         productId: session.productId,
         cost: session.cost,
         quantity,
         deliveryAddress: session.deliveryAddress ?? null,
-        status: 'payment_submitted',
+        status: 'confirmed',
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
         deliveryFee: session.deliveryFee ?? 0,
         expectedDeliveryDate: tomorrow,
-        advancePaymentAmount: session.advancePaymentAmount ?? 0,
+        advancePaymentAmount: advance,
         paymentMethod,
-        paymentEvidence,
+        paymentEvidence: v.extractedTxId,
         paymentSubmittedAt: new Date(),
+        paymentVerifiedAt: new Date(),
+        verifyEtRequestId: verifyResult.requestId ?? null,
+        verifyEtStatus: verifyResult.outcome,
+        verifyEtRawResponse:
+          (verifyResult.rawResponse as Record<string, unknown>) ?? null,
       });
-      this.orderSessions.delete(chatId);
 
-      const total = session.totalCost ?? session.cost * quantity;
-      const advance = session.advancePaymentAmount ?? total * 0.5;
-      const remaining = total - advance;
       const supportPhone = await this.settingsService.getSupportPhone();
       const expectedDate = tomorrow.toLocaleDateString('en-US', {
         month: 'short',
@@ -1771,16 +1790,16 @@ export class TelegramUpdate {
       });
 
       await ctx.reply(
-        `✅ *Order Placed & Payment Submitted!*\n\n` +
+        `✅ *Order Confirmed — Payment Verified!*\n\n` +
           `🌿 *${session.productName}* × ${quantity}\n` +
           `💰 *Total:* ${total.toFixed(2)} ETB\n` +
-          `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Pending verification)\n` +
+          `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Verified)\n` +
           `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
           `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
           (session.fulfilmentType === 'pickup'
             ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
             : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
-          `Our team will verify your payment and notify you shortly. 🌿\n\n` +
+          `Your payment was verified automatically. We are preparing your order! 🌿\n\n` +
           `📞 *Need help? Contact us:* ${supportPhone}`,
         {
           parse_mode: 'Markdown',
@@ -1800,12 +1819,34 @@ export class TelegramUpdate {
       await ctx.reply(`Use the menu below anytime:`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
-    } catch (err) {
       this.orderSessions.delete(chatId);
-      const msg = err instanceof Error ? err.message : String(err);
+    } catch (err) {
+      let msg = err instanceof Error ? err.message : String(err);
+      if (
+        err &&
+        typeof err === 'object' &&
+        'getResponse' in err &&
+        typeof (err as { getResponse: () => unknown }).getResponse ===
+          'function'
+      ) {
+        const body = (err as { getResponse: () => unknown }).getResponse();
+        if (typeof body === 'string') msg = body;
+        else if (
+          body &&
+          typeof body === 'object' &&
+          'message' in body
+        ) {
+          const m = (body as { message: string | string[] }).message;
+          msg = Array.isArray(m) ? m.join(' ') : String(m);
+        }
+      }
       this.logger.error(`Failed to create order: ${msg}`);
+      const isVerifyFail =
+        /verif|transaction|receipt|screenshot|reference|paid|bank/i.test(msg);
       await ctx.reply(
-        `Sorry, we couldn't place your order. Please try again.`,
+        isVerifyFail
+          ? `❌ Payment verification failed:\n${msg}\n\nPlease paste the correct transaction ID or send a clearer receipt screenshot.`
+          : `Sorry, we couldn't place your order. Please try again.`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
     }

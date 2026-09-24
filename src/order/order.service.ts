@@ -195,8 +195,31 @@ export class OrderService {
     const grandTotal = subtotal + deliveryFee;
     const totalAdvance = Math.round(grandTotal * 0.5 * 100) / 100;
 
-    const initialStatus: OrderStatus = opts.paymentEvidence
-      ? 'payment_submitted'
+    // Checkout with payment evidence: order is created ONLY after Verify.ET confirms.
+    let verifyResult: Awaited<
+      ReturnType<OrderService['verifyEvidence']>
+    >['result'] | null = null;
+    let extractedTxId: string | null = null;
+
+    if (opts.paymentEvidence || opts.paymentMethod) {
+      if (!opts.paymentEvidence?.trim() || !opts.paymentMethod) {
+        throw new BadRequestException(
+          'Payment method and transaction reference (or receipt screenshot) are required.',
+        );
+      }
+
+      const v = await this.verifyEvidence(
+        opts.paymentMethod as 'bank' | 'telebirr',
+        opts.paymentEvidence,
+        totalAdvance,
+      );
+      verifyResult = v.result;
+      extractedTxId = v.extractedTxId;
+      this.assertPaymentVerified(verifyResult);
+    }
+
+    const initialStatus: OrderStatus = verifyResult
+      ? 'confirmed'
       : 'awaiting_payment';
 
     const created: Order[] = [];
@@ -225,26 +248,29 @@ export class OrderService {
         expectedDeliveryDate: tomorrow,
         advancePaymentAmount: lineAdvance,
         paymentMethod: opts.paymentMethod ?? null,
-        paymentEvidence: opts.paymentEvidence ?? null,
-        paymentSubmittedAt: opts.paymentEvidence ? new Date() : null,
+        // Persist cleaned TX (never a screenshot URL) for reliable re-verify
+        paymentEvidence: extractedTxId ?? opts.paymentEvidence ?? null,
+        paymentSubmittedAt: verifyResult ? new Date() : null,
+        paymentVerifiedAt: verifyResult ? new Date() : null,
+        verifyEtRequestId: verifyResult?.requestId ?? null,
+        verifyEtStatus: verifyResult?.outcome ?? null,
+        verifyEtRawResponse: verifyResult?.rawResponse ?? null,
       });
+
       created.push(order);
     }
 
-    void this.notifyCustomerShopOrdersPlaced(
-      created,
-      grandTotal,
-      totalAdvance,
-      deliveryFee,
-    );
-
-    // Attempt automatic payment verification if evidence was provided
-    if (opts.paymentEvidence && opts.paymentMethod) {
-      void this.autoVerifyPayment(
+    if (initialStatus === 'confirmed') {
+      for (const order of created) {
+        void this.notifyCustomerPaymentVerified(order);
+        void this.notifyAdminsPaymentVerified(order);
+      }
+    } else {
+      void this.notifyCustomerShopOrdersPlaced(
         created,
-        opts.paymentMethod as 'bank' | 'telebirr',
-        opts.paymentEvidence,
+        grandTotal,
         totalAdvance,
+        deliveryFee,
       );
     }
 
@@ -290,6 +316,10 @@ export class OrderService {
     paymentMethod?: string | null;
     paymentEvidence?: string | null;
     paymentSubmittedAt?: Date | null;
+    paymentVerifiedAt?: Date | null;
+    verifyEtRequestId?: string | null;
+    verifyEtStatus?: string | null;
+    verifyEtRawResponse?: Record<string, unknown> | null;
   }): Promise<Order> {
     const quantity = Math.floor(Number(data.quantity));
     if (!Number.isFinite(quantity) || quantity < 1) {
@@ -330,6 +360,10 @@ export class OrderService {
         paymentMethod: data.paymentMethod ?? null,
         paymentEvidence: data.paymentEvidence ?? null,
         paymentSubmittedAt: data.paymentSubmittedAt ?? null,
+        paymentVerifiedAt: data.paymentVerifiedAt ?? null,
+        verifyEtRequestId: data.verifyEtRequestId ?? null,
+        verifyEtStatus: data.verifyEtStatus ?? null,
+        verifyEtRawResponse: data.verifyEtRawResponse ?? null,
       });
       const saved = await em.save(order);
       return saved.id;
@@ -345,7 +379,7 @@ export class OrderService {
     return this.updateStatus(id, 'cancelled', { cancelledBy: 'customer' });
   }
 
-  /** Customer submits payment evidence */
+  /** Customer submits payment evidence — confirms only when Verify.ET verifies */
   async submitPaymentEvidence(
     orderId: string,
     customerId: string,
@@ -360,22 +394,30 @@ export class OrderService {
         `Order is not awaiting payment (current status: ${order.status})`,
       );
     }
+    const v = await this.verifyEvidence(
+      evidence.paymentMethod,
+      evidence.paymentEvidence,
+      Number(order.advancePaymentAmount) || 0,
+      order.id,
+    );
+
+    this.assertPaymentVerified(v.result);
+
     order.paymentMethod = evidence.paymentMethod;
-    order.paymentEvidence = evidence.paymentEvidence;
+    order.paymentEvidence = v.extractedTxId;
     order.paymentSubmittedAt = new Date();
-    order.status = 'payment_submitted';
+    order.verifyEtRequestId = v.result.requestId ?? null;
+    order.verifyEtStatus = v.result.outcome;
+    order.verifyEtRawResponse =
+      (v.result.rawResponse as Record<string, unknown>) ?? null;
+    order.status = 'confirmed';
+    order.paymentVerifiedAt = new Date();
+
     await this.orderRepository.save(order);
 
     const updated = await this.findOne(order.id);
-    void this.notifyAdminsPaymentSubmitted(updated);
-
-    // Attempt automatic verification
-    void this.autoVerifyPayment(
-      [updated],
-      evidence.paymentMethod,
-      evidence.paymentEvidence,
-      Number(updated.advancePaymentAmount) || 0,
-    );
+    void this.notifyCustomerPaymentVerified(updated);
+    void this.notifyAdminsPaymentVerified(updated);
 
     return updated;
   }
@@ -401,89 +443,165 @@ export class OrderService {
     if (!order.paymentEvidence || !order.paymentMethod) {
       throw new BadRequestException('No payment evidence to verify');
     }
-    if (order.status !== 'payment_submitted') {
+    if (
+      order.status !== 'payment_submitted' &&
+      order.status !== 'awaiting_payment'
+    ) {
       throw new BadRequestException(
-        `Order is ${order.status}, not payment_submitted`,
+        `Order is ${order.status}; only payment_submitted / awaiting_payment can be re-verified`,
       );
     }
 
-    await this.autoVerifyPayment(
-      [order],
+    const v = await this.verifyEvidence(
       order.paymentMethod as 'bank' | 'telebirr',
       order.paymentEvidence,
       Number(order.advancePaymentAmount) || 0,
+      order.id,
     );
+    const result = v.result;
+
+    order.paymentEvidence = v.extractedTxId;
+    order.verifyEtRequestId = result.requestId ?? null;
+    order.verifyEtStatus = result.outcome;
+    order.verifyEtRawResponse =
+      (result.rawResponse as Record<string, unknown>) ?? null;
+    await this.orderRepository.save(order);
+
+    if (result.outcome === 'verified') {
+      await this.updateStatus(order.id, 'confirmed');
+    } else {
+      const customer = order.customer?.fullName ?? 'Customer';
+      const product = order.product?.name ?? 'Product';
+      await this.notificationService.create({
+        type: 'payment_submitted',
+        title: 'Re-verification failed',
+        body: `${customer} · ${product} — ${result.failureReason || result.outcome}.`,
+        orderId: order.id,
+        href: '/admin/orders',
+      });
+    }
 
     return this.findOne(orderId);
   }
 
   /**
-   * Attempt auto-verification via Verify.ET for a batch of orders
-   * that share the same payment evidence.
+   * Normalize evidence then call Verify.ET.
+   * - Pasted TX text: cleaned locally (no Gemini).
+   * - Screenshot URL: Gemini MUST extract a TX id before verify.
    */
-  private async autoVerifyPayment(
-    orders: Order[],
+  async verifyEvidence(
     paymentMethod: 'bank' | 'telebirr',
     referenceCode: string,
-    totalAdvance: number,
-  ): Promise<void> {
-    try {
-      let extractedTxId = referenceCode;
+    expectedAmount: number,
+    excludeOrderId?: string,
+  ) {
+    const raw = (referenceCode || '').trim();
+    if (!raw) {
+      throw new BadRequestException(
+        'Enter your transaction reference or upload a receipt screenshot.',
+      );
+    }
 
+    let extractedTxId: string;
+
+    if (/^https?:\/\//i.test(raw)) {
+      let ext: string | null = null;
       try {
-        const geminiInput = referenceCode.startsWith('http')
-          ? { url: referenceCode, paymentMethod }
-          : { text: referenceCode, paymentMethod };
-        const ext =
-          await this.geminiService.extractTransactionNumber(geminiInput);
-        if (ext) {
-          extractedTxId = ext;
-          this.logger.log(`Extracted TX ID: ${ext} from evidence.`);
-        }
+        ext = await this.geminiService.extractTransactionNumber({
+          url: raw,
+          paymentMethod,
+        });
       } catch (err) {
-        this.logger.warn(`Failed to extract TX ID: ${err}`);
+        this.logger.warn(`Failed to extract TX ID from screenshot: ${err}`);
       }
+      if (!ext) {
+        throw new BadRequestException(
+          'Could not read a transaction number from the screenshot. Please paste the transaction ID instead.',
+        );
+      }
+      extractedTxId = this.normalizeTxId(ext, paymentMethod);
+      this.logger.log(`Extracted TX ID: ${extractedTxId} from screenshot.`);
+    } else {
+      extractedTxId = this.normalizeTxId(raw, paymentMethod);
+      if (extractedTxId.length < 6) {
+        throw new BadRequestException(
+          'Transaction reference looks too short. Paste the full FT / Telebirr reference.',
+        );
+      }
+    }
 
-      const result = await this.verifyEtService.verify({
-        paymentMethod,
-        referenceCode: extractedTxId,
-        expectedAmount: totalAdvance,
+    await this.assertTxNotAlreadyUsed(extractedTxId, excludeOrderId);
+
+    const result = await this.verifyEtService.verify({
+      paymentMethod,
+      referenceCode: extractedTxId,
+      expectedAmount,
+    });
+
+    return { result, extractedTxId };
+  }
+
+  /**
+   * Block replay of the same bank/Telebirr reference across orders.
+   * Defense in depth alongside Verify.ET confirmationHistory.
+   */
+  private async assertTxNotAlreadyUsed(
+    txId: string,
+    excludeOrderId?: string,
+  ): Promise<void> {
+    const normalized = txId.trim();
+    if (!normalized) return;
+
+    const qb = this.orderRepository
+      .createQueryBuilder('order')
+      .where('order.status != :cancelled', { cancelled: 'cancelled' })
+      .andWhere('LOWER(TRIM(order.paymentEvidence)) = LOWER(:tx)', {
+        tx: normalized,
       });
 
-      // Store verification metadata on all orders in this batch
-      for (const order of orders) {
-        order.verifyEtRequestId = result.requestId ?? null;
-        order.verifyEtStatus = result.outcome;
-        order.verifyEtRawResponse =
-          (result.rawResponse as Record<string, unknown>) ?? null;
-        await this.orderRepository.save(order);
-      }
+    if (excludeOrderId) {
+      qb.andWhere('order.id != :excludeId', { excludeId: excludeOrderId });
+    }
 
-      if (result.outcome === 'verified') {
-        // Auto-confirm all orders
-        for (const order of orders) {
-          await this.updateStatus(order.id, 'confirmed');
-        }
-        // Logger not defined here directly, using console or can just omit since order is confirmed.
-      } else if (result.outcome === 'queued') {
-        // Will be resolved by webhook — nothing to do now
-      } else if (result.outcome !== 'skipped') {
-        // Verification failed — notify admin for manual review
-        const first = orders[0];
-        const customer = first.customer?.fullName ?? 'Customer';
-        const product = first.product?.name ?? 'Product';
-        await this.notificationService.create({
-          type: 'payment_submitted',
-          title: 'Auto-verification failed',
-          body: `${customer} · ${product} — ${result.failureReason || result.outcome}. Manual review needed.`,
-          orderId: first.id,
-          href: '/admin/orders',
-        });
-      }
-    } catch {
-      // Silently fail — orders stay in payment_submitted for manual review
+    const existing = await qb.getOne();
+    if (existing) {
+      throw new BadRequestException(
+        'This transaction reference was already used for another order. Each payment can only confirm one order.',
+      );
     }
   }
+
+  /** Reject checkout unless Verify.ET outcome is verified */
+  private assertPaymentVerified(result: {
+    outcome: string;
+    failureReason?: string;
+  }): void {
+    if (result.outcome === 'verified') return;
+    const friendly: Record<string, string> = {
+      duplicate:
+        'This transaction was already used for another order. Each payment can only confirm one order.',
+    };
+    throw new BadRequestException(
+      friendly[result.outcome] ||
+        result.failureReason ||
+        `Payment could not be verified (${result.outcome}). Check the transaction ID and try again.`,
+    );
+  }
+
+  private normalizeTxId(
+    raw: string,
+    paymentMethod: 'bank' | 'telebirr',
+  ): string {
+    let s = raw.trim().replace(/\s+/g, '');
+    s = s.replace(/^(txn|tx|ref|reference|transaction)[:#=-]*/i, '');
+    // Prefer FT… token for bank transfers when embedded in SMS-like text
+    if (paymentMethod === 'bank') {
+      const ft = s.match(/FT[A-Z0-9]+/i);
+      if (ft) return ft[0].toUpperCase();
+    }
+    return s;
+  }
+
 
   /**
    * Update order status.

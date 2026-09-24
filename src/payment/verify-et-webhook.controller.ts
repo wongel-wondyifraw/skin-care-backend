@@ -31,7 +31,12 @@ export class VerifyEtWebhookController {
   @HttpCode(200)
   async handleWebhook(@Body() payload: Record<string, unknown>) {
     const requestId =
-      typeof payload.requestId === 'string' ? payload.requestId : '';
+      typeof payload.requestId === 'string'
+        ? payload.requestId
+        : typeof (payload.data as Record<string, unknown> | undefined)
+              ?.requestId === 'string'
+          ? String((payload.data as Record<string, unknown>).requestId)
+          : '';
     if (!requestId) {
       this.logger.warn('Webhook received without requestId');
       return { received: true };
@@ -39,18 +44,19 @@ export class VerifyEtWebhookController {
 
     this.logger.log(`Verify.ET webhook received: requestId=${requestId}`);
 
-    // Find all orders linked to this requestId
     const orders = await this.orderRepository.find({
       where: { verifyEtRequestId: requestId },
       relations: { customer: true, product: true },
     });
 
     if (!orders.length) {
-      this.logger.warn(`No orders found for requestId=${requestId}`);
+      // Expected when checkout already polled to completion before webhook
+      this.logger.log(
+        `No pending orders for requestId=${requestId} (likely already resolved)`,
+      );
       return { received: true };
     }
 
-    // Parse the webhook payload using the same logic as sync responses
     const totalAdvance = orders.reduce(
       (sum, o) => sum + (Number(o.advancePaymentAmount) || 0),
       0,
@@ -60,7 +66,6 @@ export class VerifyEtWebhookController {
       totalAdvance,
     );
 
-    // Update all linked orders
     for (const order of orders) {
       order.verifyEtStatus = result.outcome;
       order.verifyEtRawResponse = result.rawResponse ?? null;
@@ -68,7 +73,8 @@ export class VerifyEtWebhookController {
 
       if (
         result.outcome === 'verified' &&
-        order.status === 'payment_submitted'
+        (order.status === 'payment_submitted' ||
+          order.status === 'awaiting_payment')
       ) {
         await this.orderService.updateStatus(order.id, 'confirmed');
       }

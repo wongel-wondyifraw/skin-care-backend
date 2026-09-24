@@ -354,18 +354,32 @@ export class GeminiService {
     text?: string;
     paymentMethod: 'bank' | 'telebirr';
   }): Promise<string | null> {
-    const prompt = `Extract ONLY the transaction reference number from this ${input.paymentMethod} payment evidence.
-If there are multiple numbers, find the one that looks like a transaction ID / reference code (usually alphanumeric or a long number).
-Return EXACTLY the transaction number and nothing else. No prefixes, no explanations. If you cannot find any transaction number, return "NOT_FOUND".`;
+    const bankHint =
+      input.paymentMethod === 'telebirr'
+        ? 'Telebirr transaction / reference number (often alphanumeric like DET8FJGUJ4).'
+        : 'CBE / bank FT reference (often starts with FT followed by digits/letters).';
+
+    const prompt = `Extract ONLY the transaction reference number from this ${input.paymentMethod} payment receipt.
+Look for: ${bankHint}
+If multiple numbers appear, prefer the FT reference or the labeled transaction/reference ID — not phone numbers, amounts, or dates.
+Return EXACTLY the transaction number and nothing else. No prefixes, labels, or punctuation. If you cannot find any transaction number, return "NOT_FOUND".`;
 
     try {
       let buffer = input.buffer;
+      let mimeType = 'image/jpeg';
+
       if (input.url && input.url.startsWith('http')) {
         const res = await fetch(input.url, {
           signal: AbortSignal.timeout(20000),
         });
         if (res.ok) {
           buffer = Buffer.from(await res.arrayBuffer());
+          const ct = res.headers.get('content-type')?.split(';')[0]?.trim();
+          if (ct?.startsWith('image/')) {
+            mimeType = ct;
+          } else {
+            mimeType = this.guessImageMime(input.url);
+          }
         }
       }
 
@@ -375,19 +389,19 @@ Return EXACTLY the transaction number and nothing else. No prefixes, no explanat
           {
             inlineData: {
               data: buffer.toString('base64'),
-              mimeType: 'image/jpeg',
+              mimeType,
             },
           },
         ]);
-        const text = result.response.text().trim();
-        return text === 'NOT_FOUND' ? null : text;
-      } else if (input.text) {
+        return this.normalizeExtractedTx(result.response.text());
+      }
+
+      if (input.text) {
         const result = await this.receiptModel.generateContent([
           prompt,
           input.text,
         ]);
-        const text = result.response.text().trim();
-        return text === 'NOT_FOUND' ? null : text;
+        return this.normalizeExtractedTx(result.response.text());
       }
     } catch (err) {
       this.logger.error(
@@ -396,5 +410,25 @@ Return EXACTLY the transaction number and nothing else. No prefixes, no explanat
       return null;
     }
     return null;
+  }
+
+  private normalizeExtractedTx(raw: string): string | null {
+    const text = raw
+      .trim()
+      .replace(/^["'`]+|["'`]+$/g, '')
+      .replace(/^(transaction|reference|ref|tx|id)\s*[:=#-]?\s*/i, '')
+      .trim();
+    if (!text || /^not[_\s-]?found$/i.test(text)) return null;
+    // Take first token-like ref if model added extra words
+    const match = text.match(/[A-Za-z0-9][A-Za-z0-9_./-]{5,}/);
+    return match ? match[0] : text.length >= 6 ? text.split(/\s+/)[0] : null;
+  }
+
+  private guessImageMime(url: string): string {
+    const path = url.split('?')[0].toLowerCase();
+    if (path.endsWith('.png')) return 'image/png';
+    if (path.endsWith('.webp')) return 'image/webp';
+    if (path.endsWith('.gif')) return 'image/gif';
+    return 'image/jpeg';
   }
 }
