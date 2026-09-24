@@ -62,8 +62,7 @@ export class OrderService {
     private readonly verifyEtService: VerifyEtService,
     @Inject(forwardRef(() => GeminiService))
     private readonly geminiService: GeminiService,
-  ) {
-}
+  ) {}
 
   private hydrateQuery() {
     return this.orderRepository
@@ -430,12 +429,13 @@ export class OrderService {
   ): Promise<void> {
     try {
       let extractedTxId = referenceCode;
-      
+
       try {
         const geminiInput = referenceCode.startsWith('http')
           ? { url: referenceCode, paymentMethod }
           : { text: referenceCode, paymentMethod };
-        const ext = await this.geminiService.extractTransactionNumber(geminiInput);
+        const ext =
+          await this.geminiService.extractTransactionNumber(geminiInput);
         if (ext) {
           extractedTxId = ext;
           this.logger.log(`Extracted TX ID: ${ext} from evidence.`);

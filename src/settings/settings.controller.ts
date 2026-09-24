@@ -90,7 +90,6 @@ export class SettingsController {
     return this.settingsService.setDeliveryRate(body);
   }
 
-
   @Get('payment-info')
   getPaymentInfo() {
     return this.settingsService.getPaymentInfo();

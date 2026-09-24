@@ -9,6 +9,7 @@ export class GeminiService {
   private readonly genAI: GoogleGenerativeAI;
   private readonly model: any;
   private readonly scanModel: any;
+  private readonly receiptModel: any;
 
   constructor(private readonly config: ConfigService) {
     const apiKey = this.config.get<string>('GEMINI_API_KEY');
@@ -39,6 +40,13 @@ export class GeminiService {
         'You never invent products or give medical diagnoses. ' +
         'Keep answers minimal: short bullets only, never long paragraphs.',
       generationConfig: { temperature: 0.3, topP: 0.85 },
+    });
+
+    this.receiptModel = this.genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction:
+        'You are an accurate optical character recognition (OCR) and text extraction assistant.',
+      generationConfig: { temperature: 0.0, topP: 0.8 },
     });
 
     this.logger.log(`Gemini service initialized with model: ${modelName}`);
@@ -340,7 +348,12 @@ export class GeminiService {
   /**
    * Extract transaction reference number from a photo buffer or text SMS.
    */
-  async extractTransactionNumber(input: { url?: string; buffer?: Buffer; text?: string; paymentMethod: 'bank' | 'telebirr' }): Promise<string | null> {
+  async extractTransactionNumber(input: {
+    url?: string;
+    buffer?: Buffer;
+    text?: string;
+    paymentMethod: 'bank' | 'telebirr';
+  }): Promise<string | null> {
     const prompt = `Extract ONLY the transaction reference number from this ${input.paymentMethod} payment evidence.
 If there are multiple numbers, find the one that looks like a transaction ID / reference code (usually alphanumeric or a long number).
 Return EXACTLY the transaction number and nothing else. No prefixes, no explanations. If you cannot find any transaction number, return "NOT_FOUND".`;
@@ -357,7 +370,7 @@ Return EXACTLY the transaction number and nothing else. No prefixes, no explanat
       }
 
       if (buffer) {
-        const result = await this.model.generateContent([
+        const result = await this.receiptModel.generateContent([
           prompt,
           {
             inlineData: {
@@ -369,7 +382,7 @@ Return EXACTLY the transaction number and nothing else. No prefixes, no explanat
         const text = result.response.text().trim();
         return text === 'NOT_FOUND' ? null : text;
       } else if (input.text) {
-        const result = await this.model.generateContent([
+        const result = await this.receiptModel.generateContent([
           prompt,
           input.text,
         ]);
@@ -377,7 +390,9 @@ Return EXACTLY the transaction number and nothing else. No prefixes, no explanat
         return text === 'NOT_FOUND' ? null : text;
       }
     } catch (err) {
-      this.logger.error(`Failed to extract transaction number via Gemini: ${err}`);
+      this.logger.error(
+        `Failed to extract transaction number via Gemini: ${err}`,
+      );
       return null;
     }
     return null;
