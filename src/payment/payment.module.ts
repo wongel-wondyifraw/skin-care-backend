@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { SettingsModule } from '../settings/settings.module.js';
@@ -14,7 +14,7 @@ import { NotificationModule } from '../notification/notification.module.js';
     ConfigModule,
     SettingsModule,
     TypeOrmModule.forFeature([Order]),
-    OrderModule,
+    forwardRef(() => OrderModule),
     NotificationModule,
   ],
   providers: [VerifyEtService],

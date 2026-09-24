@@ -8,6 +8,7 @@ import { OrderController } from './order.controller.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
 import { NotificationModule } from '../notification/notification.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
+import { PaymentModule } from '../payment/payment.module.js';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { SettingsModule } from '../settings/settings.module.js';
     forwardRef(() => TelegramModule),
     NotificationModule,
     forwardRef(() => SettingsModule),
+    forwardRef(() => PaymentModule),
   ],
   providers: [OrderService],
   controllers: [OrderController],

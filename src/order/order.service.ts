@@ -51,6 +51,7 @@ export class OrderService {
     private readonly notificationService: NotificationService,
     @Inject(forwardRef(() => SettingsService))
     private readonly settingsService: SettingsService,
+    @Inject(forwardRef(() => VerifyEtService))
     private readonly verifyEtService: VerifyEtService,
   ) {}
 
