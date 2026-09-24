@@ -9,8 +9,17 @@ import {
 } from 'typeorm';
 import { Customer } from '../customer/customer.entity.js';
 import { Product } from '../product/product.entity.js';
+import { PickupLocation } from '../pickup-location/pickup-location.entity.js';
 
-export type OrderStatus = 'pending' | 'delivered' | 'cancelled';
+export type OrderStatus =
+  | 'awaiting_payment'
+  | 'payment_submitted'
+  | 'pending'
+  | 'confirmed'
+  | 'delivered'
+  | 'cancelled';
+
+export type FulfilmentType = 'delivery' | 'pickup';
 
 @Entity('orders')
 export class Order {
@@ -50,6 +59,44 @@ export class Order {
   /** True when stock was decremented at order create time. */
   @Column({ type: 'boolean', default: false })
   stockReserved: boolean;
+
+  @Column({ type: 'varchar', length: 20, default: 'delivery' })
+  fulfilmentType: FulfilmentType;
+
+  /** Only set when fulfilmentType = 'pickup' */
+  @Column({ nullable: true })
+  pickupLocationId: string | null;
+
+  @ManyToOne(() => PickupLocation, { nullable: true, onDelete: 'SET NULL' })
+  @JoinColumn({ name: 'pickupLocationId' })
+  pickupLocation: PickupLocation | null;
+
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  deliveryFee: number;
+
+  /** Expected delivery/pickup date */
+  @Column({ type: 'date', nullable: true })
+  expectedDeliveryDate: Date | null;
+
+  /** 50% payment amount required */
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  advancePaymentAmount: number;
+
+  /** URL to uploaded payment screenshot or reference text */
+  @Column({ type: 'text', nullable: true })
+  paymentEvidence: string | null;
+
+  /** Payment method used: 'bank' | 'telebirr' */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  paymentMethod: string | null;
+
+  /** When the customer clicked "I Have Paid" */
+  @Column({ type: 'timestamptz', nullable: true })
+  paymentSubmittedAt: Date | null;
+
+  /** When admin verified the payment */
+  @Column({ type: 'timestamptz', nullable: true })
+  paymentVerifiedAt: Date | null;
 
   @Index()
   @CreateDateColumn()

@@ -53,7 +53,7 @@ export class RegistrationSessionStore {
 
 export type AdminStep =
   | 'awaiting_password' // /admin entered, waiting for password
-  | 'authenticated';    // password accepted, admin menu is active
+  | 'authenticated'; // password accepted, admin menu is active
 
 export interface AdminSession {
   step: AdminStep;
@@ -82,15 +82,15 @@ export class AdminSessionStore {
 // ─── Profile Edit ──────────────────────────────────────────────────────────
 
 export type ProfileEditStep =
-  | 'choosing_field'      // user is choosing what to edit
-  | 'awaiting_name'       // editing full name
-  | 'awaiting_phone'      // editing phone
-  | 'awaiting_skin_type'  // editing skin type
-  | 'awaiting_address';   // editing address
+  | 'choosing_field' // user is choosing what to edit
+  | 'awaiting_name' // editing full name
+  | 'awaiting_phone' // editing phone
+  | 'awaiting_skin_type' // editing skin type
+  | 'awaiting_address'; // editing address
 
 export interface ProfileEditSession {
   step: ProfileEditStep;
-  customerId: string;       // DB id of the customer being edited
+  customerId: string; // DB id of the customer being edited
   field?: 'name' | 'phone' | 'skinType' | 'address';
   newValue?: string;
 }
@@ -115,11 +115,14 @@ export class ProfileEditSessionStore {
   }
 }
 
-// ─── Order (quantity → optional delivery address) ──────────────────────────
+// ─── Order (quantity → fulfilment → address/pickup → payment) ─────────────
 
 export type OrderSessionStep =
   | 'awaiting_quantity'
-  | 'awaiting_delivery_address';
+  | 'awaiting_fulfilment_type'
+  | 'awaiting_delivery_address'
+  | 'awaiting_pickup_selection'
+  | 'awaiting_payment_evidence';
 
 export interface OrderSession {
   step: OrderSessionStep;
@@ -130,6 +133,13 @@ export interface OrderSession {
   productName: string;
   maxStock: number;
   quantity?: number;
+  fulfilmentType?: 'delivery' | 'pickup';
+  pickupLocationId?: string;
+  pickupLocationName?: string;
+  deliveryAddress?: string | null;
+  deliveryFee?: number;
+  advancePaymentAmount?: number;
+  totalCost?: number;
 }
 
 export class OrderSessionStore {

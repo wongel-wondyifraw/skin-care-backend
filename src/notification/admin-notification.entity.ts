@@ -9,7 +9,9 @@ import {
 export type AdminNotificationType =
   | 'order_placed'
   | 'order_cancelled'
-  | 'order_delivered';
+  | 'order_delivered'
+  | 'payment_submitted'
+  | 'payment_verified';
 
 @Entity('admin_notifications')
 export class AdminNotification {

@@ -8,6 +8,9 @@ import { CategoryModule } from '../category/category.module.js';
 import { SkinTypeModule } from '../skin-type/skin-type.module.js';
 import { OrderModule } from '../order/order.module.js';
 import { SettingsModule } from '../settings/settings.module.js';
+import { CartModule } from '../cart/cart.module.js';
+import { PickupLocationModule } from '../pickup-location/pickup-location.module.js';
+import { UploadModule } from '../upload/upload.module.js';
 import { ShopController } from './shop.controller.js';
 import { ShopAuthService } from './shop-auth.service.js';
 import { CustomerJwtStrategy } from './customer-jwt.strategy.js';
@@ -23,6 +26,9 @@ import { CustomerJwtAuthGuard } from './customer-jwt-auth.guard.js';
     SkinTypeModule,
     OrderModule,
     SettingsModule,
+    CartModule,
+    PickupLocationModule,
+    UploadModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

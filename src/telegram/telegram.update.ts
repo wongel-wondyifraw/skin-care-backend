@@ -12,10 +12,12 @@ import { GeminiService } from './gemini.service.js';
 import { CloudinaryService } from '../upload/cloudinary.service.js';
 import { SkinAnalysisService } from '../skin-analysis/skin-analysis.service.js';
 import { CustomerMessageService } from '../customer/customer-message.service.js';
+import { SettingsService } from '../settings/settings.service.js';
+import { PickupLocationService } from '../pickup-location/pickup-location.service.js';
+import { CartService } from '../cart/cart.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 import {
   AdminSessionStore,
-  CatalogBrowseSession,
   CatalogBrowseSessionStore,
   OrderSession,
   OrderSessionStore,
@@ -61,6 +63,9 @@ export class TelegramUpdate {
     private readonly skinAnalysisService: SkinAnalysisService,
     private readonly customerMessageService: CustomerMessageService,
     private readonly config: ConfigService,
+    private readonly settingsService: SettingsService,
+    private readonly pickupLocationService: PickupLocationService,
+    private readonly cartService: CartService,
   ) {}
 
   private shopWebAppUrl(): string | null {
@@ -140,6 +145,25 @@ export class TelegramUpdate {
         `We offer premium skincare products tailored for every skin type.\n\n` +
         `Let's get you registered — it only takes a moment.\n\n` +
         `What is your full name?`,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  // /help & /support — customer service
+  // ─────────────────────────────────────────────
+  @Command('help')
+  @Command('support')
+  async onSupportCommand(@Ctx() ctx: Context) {
+    const phone = await this.settingsService.getSupportPhone();
+    await ctx.reply(
+      `📞 *Customer Support — Medaf Skin Care*\n\n` +
+        `Need help with an order, advice, or delivery?\n` +
+        `Call or message our support team: *${phone}*\n\n` +
+        `We're here to assist you! 🌿`,
+      {
+        parse_mode: 'Markdown',
+        reply_markup: this.userKeyboard(ctx.from?.id),
+      },
     );
   }
 
@@ -230,12 +254,11 @@ export class TelegramUpdate {
       if (userSkinType && userSkinType.toLowerCase() !== 'all') {
         const target = userSkinType.toLowerCase();
         filteredProducts = allProducts.filter((p) => {
-          const skins =
-            p.skinTypes?.length
-              ? p.skinTypes
-              : p.skinType
-                ? [p.skinType]
-                : [];
+          const skins = p.skinTypes?.length
+            ? p.skinTypes
+            : p.skinType
+              ? [p.skinType]
+              : [];
           if (skins.length === 0) return true;
           return skins.some((s) => {
             const name = (s.name || 'All').toLowerCase();
@@ -310,9 +333,7 @@ export class TelegramUpdate {
       }
 
       // ── Step 3: Send a photo card for each recommended product ──
-      await ctx.reply(
-        `🛍️ Here are the products recommended for you:`,
-      );
+      await ctx.reply(`🛍️ Here are the products recommended for you:`);
 
       const cards = recommendedProducts.slice(0, MAX_PRODUCT_CARDS);
       for (let i = 0; i < cards.length; i++) {
@@ -372,7 +393,9 @@ export class TelegramUpdate {
     ctx: Context,
     product: { id: string; name: string; image?: string | null },
     caption: string,
-    replyMarkup: { inline_keyboard: { text: string; callback_data: string }[][] },
+    replyMarkup: {
+      inline_keyboard: { text: string; callback_data: string }[][];
+    },
   ) {
     const imageUrl = product.image?.trim();
 
@@ -451,8 +474,7 @@ export class TelegramUpdate {
     // When Mini App URL is configured, Products is a web_app button on the main
     // keyboard — this fallback is only for chats without SHOP_WEBAPP_URL.
     await ctx.reply(
-      header ??
-        `📦 Products\n\nChoose how you'd like to browse:`,
+      header ?? `📦 Products\n\nChoose how you'd like to browse:`,
       { reply_markup: PRODUCTS_KEYBOARD },
     );
   }
@@ -497,7 +519,7 @@ export class TelegramUpdate {
       productId: product.id,
       customerId: customer.id,
       cost: effectiveUnitPrice(
-        product.price,
+        Number(product.price),
         product.discountPercent,
         product.discountEndsAt,
       ),
@@ -511,7 +533,7 @@ export class TelegramUpdate {
     ];
 
     const unit = effectiveUnitPrice(
-      product.price,
+      Number(product.price),
       product.discountPercent,
       product.discountEndsAt,
     );
@@ -662,8 +684,7 @@ export class TelegramUpdate {
     };
 
     const text =
-      `📂 ${categoryName}\n` +
-      `Tap a product name (${result.total} total):`;
+      `📂 ${categoryName}\n` + `Tap a product name (${result.total} total):`;
 
     if (editMessage && 'editMessageText' in ctx) {
       try {
@@ -743,8 +764,7 @@ export class TelegramUpdate {
     };
 
     const text =
-      `🔍 Results for "${search}"\n` +
-      `Tap a product (${result.total} found):`;
+      `🔍 Results for "${search}"\n` + `Tap a product (${result.total} found):`;
 
     if (editMessage && 'editMessageText' in ctx) {
       try {
@@ -911,7 +931,8 @@ export class TelegramUpdate {
         await ctx.answerCbQuery('This order is not yours.');
         return;
       }
-      if (order.status !== 'pending') {
+      const cancellable = ['pending', 'awaiting_payment', 'payment_submitted'];
+      if (!cancellable.includes(order.status)) {
         await ctx.answerCbQuery(`Order is already ${order.status}.`);
         return;
       }
@@ -931,13 +952,29 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
+  // Inline: Clear Cart from 24h reminder
+  // ─────────────────────────────────────────────
+  @Action(/^clear_cart_(.+)$/)
+  async onClearCartCallback(@Ctx() ctx: Context) {
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const customerId = data.replace(/^clear_cart_/, '');
+    await this.cartService.clearCart(customerId);
+    await ctx.answerCbQuery('Cart cleared!');
+    await ctx.reply('🗑️ Your cart has been cleared.', {
+      reply_markup: this.userKeyboard(ctx.from?.id),
+    });
+  }
+
+  // ─────────────────────────────────────────────
   // All text / contact messages
   // ─────────────────────────────────────────────
   @On('message')
   async onMessage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
-    const message = ctx.message as Message.TextMessage &
-      Message.ContactMessage;
+    const message = ctx.message as Message.TextMessage & Message.ContactMessage;
     const text = ('text' in message ? message.text : '').trim();
 
     // WebApp orders are created via the shop API (not sendData / web_app_data).
@@ -956,8 +993,18 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Order flow (quantity → address) ──────────────────────────
+    // ── Order payment screenshot photo ───────────────────────────
     const orderSession = this.orderSessions.get(chatId);
+    if (
+      orderSession &&
+      orderSession.step === 'awaiting_payment_evidence' &&
+      this.isPhotoMessage(ctx)
+    ) {
+      await this.handleOrderPaymentPhoto(ctx, chatId, orderSession);
+      return;
+    }
+
+    // ── Order flow ───────────────────────────────────────────────
     if (orderSession) {
       await this.handleOrderFlow(ctx, chatId, orderSession, text);
       return;
@@ -1103,7 +1150,9 @@ export class TelegramUpdate {
     }
 
     if (text && !this.isKnownKeyboardLabel(text)) {
-      const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+      const customer = await this.customerService.findByTelegramId(
+        ctx.from!.id,
+      );
       if (customer) {
         try {
           await this.customerMessageService.recordInbound(customer.id, text);
@@ -1208,8 +1257,11 @@ export class TelegramUpdate {
       if (userSkinType && userSkinType.toLowerCase() !== 'all') {
         const target = userSkinType.toLowerCase();
         filteredProducts = allProducts.filter((p) => {
-          const skins =
-            p.skinTypes?.length ? p.skinTypes : p.skinType ? [p.skinType] : [];
+          const skins = p.skinTypes?.length
+            ? p.skinTypes
+            : p.skinType
+              ? [p.skinType]
+              : [];
           if (skins.length === 0) return true;
           return skins.some((s) => {
             const name = (s.name || 'All').toLowerCase();
@@ -1323,26 +1375,26 @@ export class TelegramUpdate {
   ) {
     if (text === '❌ Cancel order') {
       this.orderSessions.delete(chatId);
-      await ctx.reply(`Order cancelled.`, { reply_markup: this.userKeyboard(ctx.from?.id) });
+      await ctx.reply(`Order cancelled.`, {
+        reply_markup: this.userKeyboard(ctx.from?.id),
+      });
       return;
     }
 
+    // ── Step 1: Awaiting quantity ──
     if (session.step === 'awaiting_quantity') {
       const qty = Number.parseInt(text, 10);
       if (!Number.isFinite(qty) || qty < 1) {
-        await ctx.reply(
-          `Please tap 1–4 or type a whole number (1 or more).`,
-          {
-            reply_markup: {
-              keyboard: [
-                [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
-                [{ text: '❌ Cancel order' }],
-              ],
-              resize_keyboard: true,
-              one_time_keyboard: true,
-            },
+        await ctx.reply(`Please tap 1–4 or type a whole number (1 or more).`, {
+          reply_markup: {
+            keyboard: [
+              [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
+              [{ text: '❌ Cancel order' }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
           },
-        );
+        });
         return;
       }
 
@@ -1364,16 +1416,21 @@ export class TelegramUpdate {
       }
 
       session.quantity = qty;
-      session.step = 'awaiting_delivery_address';
+      session.step = 'awaiting_fulfilment_type';
       this.orderSessions.set(chatId, session);
 
-      const lineTotal = session.cost * qty;
+      const subtotal = session.cost * qty;
       await ctx.reply(
-        `Qty: ${qty} × ${session.cost.toFixed(2)} = ${lineTotal.toFixed(2)} ETB\n\n` +
-          `Optionally enter a delivery address, or tap Skip to place the order without one.`,
+        `📦 *Order Summary:*\n` +
+          `🌿 ${session.productName} × ${qty} = ${subtotal.toFixed(2)} ETB\n\n` +
+          `How would you like to receive your order?`,
         {
+          parse_mode: 'Markdown',
           reply_markup: {
-            keyboard: [[{ text: 'Skip' }], [{ text: '❌ Cancel order' }]],
+            keyboard: [
+              [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
+              [{ text: '❌ Cancel order' }],
+            ],
             resize_keyboard: true,
             one_time_keyboard: true,
           },
@@ -1382,10 +1439,284 @@ export class TelegramUpdate {
       return;
     }
 
-    // awaiting_delivery_address
-    const skip = !text || text.toLowerCase() === 'skip';
-    const deliveryAddress = skip ? null : text;
+    // ── Step 2: Fulfilment type ──
+    if (session.step === 'awaiting_fulfilment_type') {
+      if (text.includes('Delivery') || text.includes('🚚')) {
+        session.fulfilmentType = 'delivery';
+        const customer = await this.customerService.findOne(session.customerId);
+        if (customer?.address && customer.address.trim()) {
+          const feeRes = await this.settingsService.calculateDeliveryFee(
+            customer.address,
+          );
+          session.deliveryAddress = customer.address.trim();
+          session.deliveryFee = feeRes.fee;
+          this.orderSessions.set(chatId, session);
+
+          await ctx.reply(
+            `📍 *Saved Address:* ${customer.address}\n` +
+              `🚚 *Delivery Fee:* ${feeRes.fee.toFixed(2)} ETB (${feeRes.zone})\n\n` +
+              `Would you like to deliver to this address?`,
+            {
+              parse_mode: 'Markdown',
+              reply_markup: {
+                keyboard: [
+                  [{ text: '✅ Use Saved Address' }],
+                  [{ text: '📝 Change Address' }],
+                  [{ text: '❌ Cancel order' }],
+                ],
+                resize_keyboard: true,
+                one_time_keyboard: true,
+              },
+            },
+          );
+          return;
+        }
+
+        // No saved address, ask for one
+        session.step = 'awaiting_delivery_address';
+        this.orderSessions.set(chatId, session);
+        await ctx.reply(
+          `📍 Please enter your delivery address / neighborhood in Addis Ababa (e.g., Bole, CMC, Kazanchis):`,
+          {
+            reply_markup: {
+              keyboard: [[{ text: '❌ Cancel order' }]],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      if (text.includes('Pickup') || text.includes('📍')) {
+        session.fulfilmentType = 'pickup';
+        session.deliveryFee = 0;
+        const locations = await this.pickupLocationService.findEnabled();
+        if (locations.length === 0) {
+          session.pickupLocationId = undefined;
+          session.pickupLocationName = 'Medaf Store';
+          await this.sendPaymentPrompt(ctx, chatId, session);
+          return;
+        }
+
+        session.step = 'awaiting_pickup_selection';
+        this.orderSessions.set(chatId, session);
+
+        const locButtons = locations.map((loc) => [{ text: `📍 ${loc.name}` }]);
+        locButtons.push([{ text: '❌ Cancel order' }]);
+
+        let locText = `📍 *Select a pickup location:*\n\n`;
+        locations.forEach((l, idx) => {
+          locText += `${idx + 1}. *${l.name}*\n   ${l.address}\n\n`;
+        });
+        locText += `Tap a location below:`;
+
+        await ctx.reply(locText, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: locButtons,
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        });
+        return;
+      }
+
+      await ctx.reply('Please choose 🚚 Delivery or 📍 Store Pickup:', {
+        reply_markup: {
+          keyboard: [
+            [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
+            [{ text: '❌ Cancel order' }],
+          ],
+          resize_keyboard: true,
+          one_time_keyboard: true,
+        },
+      });
+      return;
+    }
+
+    // ── Delivery address handling ──
+    if (text === '✅ Use Saved Address') {
+      await this.sendPaymentPrompt(ctx, chatId, session);
+      return;
+    }
+
+    if (text === '📝 Change Address') {
+      session.step = 'awaiting_delivery_address';
+      this.orderSessions.set(chatId, session);
+      await ctx.reply(
+        `📍 Please enter your delivery address / neighborhood in Addis Ababa:`,
+        {
+          reply_markup: {
+            keyboard: [[{ text: '❌ Cancel order' }]],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+      return;
+    }
+
+    if (session.step === 'awaiting_delivery_address') {
+      const address = text.trim();
+      const feeRes = await this.settingsService.calculateDeliveryFee(address);
+      session.deliveryAddress = address;
+      session.deliveryFee = feeRes.fee;
+      await this.sendPaymentPrompt(ctx, chatId, session);
+      return;
+    }
+
+    // ── Pickup location selection ──
+    if (session.step === 'awaiting_pickup_selection') {
+      const locations = await this.pickupLocationService.findEnabled();
+      const cleanText = text
+        .replace(/^📍\s*/, '')
+        .trim()
+        .toLowerCase();
+      const found = locations.find(
+        (l) =>
+          l.name.toLowerCase().includes(cleanText) ||
+          cleanText.includes(l.name.toLowerCase()),
+      );
+      if (found) {
+        session.pickupLocationId = found.id;
+        session.pickupLocationName = found.name;
+        await this.sendPaymentPrompt(ctx, chatId, session);
+        return;
+      }
+
+      await ctx.reply('Please tap one of the listed pickup locations:');
+      return;
+    }
+
+    // ── Step 3: Payment evidence (text message) ──
+    if (session.step === 'awaiting_payment_evidence') {
+      const evidence = text.trim();
+      const lower = evidence.toLowerCase();
+      const method =
+        lower.startsWith('09') || lower.includes('telebirr')
+          ? 'telebirr'
+          : 'bank';
+      await this.completeBotOrder(ctx, chatId, session, evidence, method);
+      return;
+    }
+  }
+
+  private async sendPaymentPrompt(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+  ) {
+    const qty = session.quantity ?? 1;
+    const subtotal = session.cost * qty;
+    const deliveryFee = session.deliveryFee ?? 0;
+    const grandTotal = subtotal + deliveryFee;
+    const advance = Math.round(grandTotal * 0.5 * 100) / 100;
+    const remaining = grandTotal - advance;
+
+    session.totalCost = grandTotal;
+    session.advancePaymentAmount = advance;
+    session.step = 'awaiting_payment_evidence';
+    this.orderSessions.set(chatId, session);
+
+    const paymentInfo = await this.settingsService.getPaymentInfo();
+    const bank = paymentInfo.bankAccount;
+    const telebirr = paymentInfo.telebirr;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const expectedDate = tomorrow.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    });
+
+    const isPickup = session.fulfilmentType === 'pickup';
+    const fulfilmentLine = isPickup
+      ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}`
+      : `📍 *Delivery Address:* ${session.deliveryAddress}\n🚚 *Delivery Fee:* ${deliveryFee.toFixed(2)} ETB`;
+
+    const message =
+      `💳 *Payment & Order Summary:*\n\n` +
+      `🌿 *Product:* ${session.productName} × ${qty} = ${subtotal.toFixed(2)} ETB\n` +
+      `${fulfilmentLine}\n` +
+      `───────────────────────\n` +
+      `💰 *Total:* ${grandTotal.toFixed(2)} ETB\n` +
+      `💵 *50% Advance Required:* ${advance.toFixed(2)} ETB\n` +
+      `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
+      `📅 *Expected ${isPickup ? 'Ready' : 'Delivery'}:* ${expectedDate}\n\n` +
+      `📌 *Pay 50% advance (${advance.toFixed(2)} ETB) to confirm:*\n` +
+      `🏦 *Bank Transfer:* ${bank.bankName}\n` +
+      `   • Account: \`${bank.accountNumber}\`\n` +
+      `   • Name: ${bank.accountName}\n\n` +
+      `📱 *Telebirr:*\n` +
+      `   • Phone: \`${telebirr.phoneNumber}\`\n` +
+      `   • Name: ${telebirr.accountName}\n\n` +
+      `📸 *Next Step:*\n` +
+      `Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.`;
+
+    await ctx.reply(message, {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        keyboard: [[{ text: '❌ Cancel order' }]],
+        resize_keyboard: true,
+        one_time_keyboard: true,
+      },
+    });
+  }
+
+  private async handleOrderPaymentPhoto(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+  ) {
+    const msg = ctx.message as Message.PhotoMessage;
+    const best = msg.photo[msg.photo.length - 1];
+
+    await ctx.reply(`⏳ Uploading receipt…`);
+
+    try {
+      const fileLink = await ctx.telegram.getFileLink(best.file_id);
+      let photoUrl = fileLink.href;
+
+      try {
+        const res = await fetch(fileLink.href, {
+          headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+          signal: AbortSignal.timeout(20_000),
+        });
+        if (res.ok) {
+          const buffer = Buffer.from(await res.arrayBuffer());
+          const uploaded = await this.cloudinaryService.uploadBuffer(buffer, {
+            folder: 'medaf_skincare_payments',
+          });
+          if (uploaded?.secure_url) {
+            photoUrl = uploaded.secure_url;
+          }
+        }
+      } catch (uploadErr) {
+        this.logger.warn(
+          `Cloudinary receipt upload fallback to Telegram link: ${uploadErr}`,
+        );
+      }
+
+      await this.completeBotOrder(ctx, chatId, session, photoUrl, 'screenshot');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Failed to process payment photo: ${message}`);
+      await ctx.reply(
+        `Failed to process photo. Please type your transaction reference number instead:`,
+      );
+    }
+  }
+
+  private async completeBotOrder(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+    paymentEvidence: string,
+    paymentMethod: string,
+  ) {
     const quantity = session.quantity ?? 1;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
 
     try {
       const order = await this.orderService.create({
@@ -1393,25 +1724,42 @@ export class TelegramUpdate {
         productId: session.productId,
         cost: session.cost,
         quantity,
-        deliveryAddress,
+        deliveryAddress: session.deliveryAddress ?? null,
+        status: 'payment_submitted',
+        fulfilmentType: session.fulfilmentType ?? 'delivery',
+        pickupLocationId: session.pickupLocationId ?? null,
+        deliveryFee: session.deliveryFee ?? 0,
+        expectedDeliveryDate: tomorrow,
+        advancePaymentAmount: session.advancePaymentAmount ?? 0,
+        paymentMethod,
+        paymentEvidence,
+        paymentSubmittedAt: new Date(),
       });
       this.orderSessions.delete(chatId);
 
-      const lineTotal = session.cost * quantity;
-      const addressLine = deliveryAddress
-        ? `📍 Delivery: ${deliveryAddress}\n`
-        : `📍 Delivery: not provided\n`;
+      const total = session.totalCost ?? session.cost * quantity;
+      const advance = session.advancePaymentAmount ?? total * 0.5;
+      const remaining = total - advance;
+      const supportPhone = await this.settingsService.getSupportPhone();
+      const expectedDate = tomorrow.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+      });
 
       await ctx.reply(
-        `✅ Order placed!\n\n` +
-          `🌿 ${session.productName}\n` +
-          `📦 Qty: ${quantity}\n` +
-          `💰 ${lineTotal.toFixed(2)} ETB\n` +
-          addressLine +
-          `⏳ Status: pending\n\n` +
-          `We'll contact you soon to confirm delivery.\n` +
-          `You can cancel this order while it is still pending.`,
+        `✅ *Order Placed & Payment Submitted!*\n\n` +
+          `🌿 *${session.productName}* × ${quantity}\n` +
+          `💰 *Total:* ${total.toFixed(2)} ETB\n` +
+          `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Pending verification)\n` +
+          `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
+          `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
+          (session.fulfilmentType === 'pickup'
+            ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
+            : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
+          `Our team will verify your payment and notify you shortly. 🌿\n\n` +
+          `📞 *Need help? Contact us:* ${supportPhone}`,
         {
+          parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
               [
@@ -1424,6 +1772,7 @@ export class TelegramUpdate {
           },
         },
       );
+
       await ctx.reply(`Use the menu below anytime:`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
@@ -1431,10 +1780,10 @@ export class TelegramUpdate {
       this.orderSessions.delete(chatId);
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to create order: ${msg}`);
-      const userMsg = /insufficient stock/i.test(msg)
-        ? `Sorry, that quantity is no longer available. Please try again with a smaller quantity.`
-        : `Sorry, we couldn't place your order. Please try again.`;
-      await ctx.reply(userMsg, { reply_markup: this.userKeyboard(ctx.from?.id) });
+      await ctx.reply(
+        `Sorry, we couldn't place your order. Please try again.`,
+        { reply_markup: this.userKeyboard(ctx.from?.id) },
+      );
     }
   }
 
@@ -1561,9 +1910,7 @@ export class TelegramUpdate {
   ) {
     const name = message.text?.trim();
     if (!name || name.length < 2) {
-      await ctx.reply(
-        'Please enter a valid name (at least 2 characters).',
-      );
+      await ctx.reply('Please enter a valid name (at least 2 characters).');
       return;
     }
 
@@ -1708,9 +2055,12 @@ export class TelegramUpdate {
   }
 
   private async sendAdminMenu(ctx: Context, headerText: string) {
-    await ctx.reply(`${headerText}\n\nUse the buttons below to manage your store:`, {
-      reply_markup: this.adminKeyboard(ctx.from?.id),
-    });
+    await ctx.reply(
+      `${headerText}\n\nUse the buttons below to manage your store:`,
+      {
+        reply_markup: this.adminKeyboard(ctx.from?.id),
+      },
+    );
   }
 
   private async handleAdminMenuAction(
@@ -1779,7 +2129,8 @@ export class TelegramUpdate {
       .map((c, i) => `${i + 1}. ${c.fullName} — ${c.phone}`)
       .join('\n');
 
-    const note = total > items.length ? `\n\n...and ${total - items.length} more.` : '';
+    const note =
+      total > items.length ? `\n\n...and ${total - items.length} more.` : '';
 
     await ctx.reply(
       `👥 Registered Customers (${total} total)\n\n${summary}${note}`,
@@ -1981,7 +2332,8 @@ export class TelegramUpdate {
         phone: session.phone!,
         address: session.address,
         skinTypeId: session.skinTypeId ?? null,
-        telegramUsername: session.telegramUsername ?? ctx.from?.username ?? null,
+        telegramUsername:
+          session.telegramUsername ?? ctx.from?.username ?? null,
       });
 
       this.sessions.delete(chatId);

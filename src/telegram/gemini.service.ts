@@ -124,7 +124,7 @@ export class GeminiService {
     try {
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
-      let text = response.text();
+      let text: string = String(response.text());
 
       text = this.cleanMarkdown(text);
       text = this.validateAndSanitizeOutput(text, allProducts);
@@ -231,12 +231,16 @@ export class GeminiService {
         },
       ]);
       const response = await result.response;
-      let raw = this.cleanMarkdown(response.text() || '');
+      const rawText: string = String(response.text() || '');
+      const raw = this.cleanMarkdown(rawText);
 
       const firstLine = raw.split(/\r?\n/, 1)[0]?.trim().toUpperCase() ?? '';
       const rest = raw.replace(/^[^\n]*\n?/, '').trim();
 
-      if (firstLine.includes('PHOTO_UNCLEAR') || !firstLine.includes('PHOTO_OK')) {
+      if (
+        firstLine.includes('PHOTO_UNCLEAR') ||
+        !firstLine.includes('PHOTO_OK')
+      ) {
         const retryMessage =
           rest ||
           'Please send a clearer front-facing photo in good light — one face, no heavy filter.';
@@ -269,10 +273,9 @@ export class GeminiService {
     return allProducts
       .map((p) => {
         const category = p.category?.name || 'Uncategorized';
-        const suitableFor =
-          p.skinTypes?.length
-            ? p.skinTypes.map((s) => s.name).join(', ')
-            : p.skinType?.name || 'All skin types';
+        const suitableFor = p.skinTypes?.length
+          ? p.skinTypes.map((s) => s.name).join(', ')
+          : p.skinType?.name || 'All skin types';
         const brand = p.brand?.trim() ? `  Brand: ${p.brand.trim()}\n` : '';
         const price = p.price
           ? `${Number(p.price).toFixed(2)} ETB`

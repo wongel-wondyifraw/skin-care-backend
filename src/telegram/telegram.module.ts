@@ -12,6 +12,9 @@ import { CategoryModule } from '../category/category.module.js';
 import { OrderModule } from '../order/order.module.js';
 import { UploadModule } from '../upload/upload.module.js';
 import { SkinAnalysisModule } from '../skin-analysis/skin-analysis.module.js';
+import { SettingsModule } from '../settings/settings.module.js';
+import { PickupLocationModule } from '../pickup-location/pickup-location.module.js';
+import { CartModule } from '../cart/cart.module.js';
 import { GeminiService } from './gemini.service.js';
 
 @Module({
@@ -24,6 +27,9 @@ import { GeminiService } from './gemini.service.js';
     UploadModule,
     SkinAnalysisModule,
     forwardRef(() => OrderModule),
+    SettingsModule,
+    PickupLocationModule,
+    CartModule,
     TelegrafModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -48,7 +54,12 @@ import { GeminiService } from './gemini.service.js';
       },
     }),
   ],
-  providers: [TelegramService, TelegramWebhookService, TelegramUpdate, GeminiService],
+  providers: [
+    TelegramService,
+    TelegramWebhookService,
+    TelegramUpdate,
+    GeminiService,
+  ],
   controllers: [TelegramController],
   exports: [TelegramService, TelegramWebhookService, GeminiService],
 })

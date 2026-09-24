@@ -46,12 +46,28 @@ export class OrderController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() body: { status: OrderStatus },
   ) {
-    if (body?.status !== 'delivered' && body?.status !== 'cancelled') {
-      throw new BadRequestException(
-        'Status must be delivered or cancelled',
-      );
+    const validStatuses: OrderStatus[] = [
+      'awaiting_payment',
+      'payment_submitted',
+      'pending',
+      'confirmed',
+      'delivered',
+      'cancelled',
+    ];
+    if (!validStatuses.includes(body?.status)) {
+      throw new BadRequestException('Invalid order status');
     }
     return this.orderService.updateStatus(id, body.status);
+  }
+
+  @Patch(':id/verify-payment')
+  verifyPayment(@Param('id', ParseUUIDPipe) id: string) {
+    return this.orderService.verifyPayment(id);
+  }
+
+  @Patch(':id/reject-payment')
+  rejectPayment(@Param('id', ParseUUIDPipe) id: string) {
+    return this.orderService.rejectPayment(id);
   }
 
   @Delete(':id')

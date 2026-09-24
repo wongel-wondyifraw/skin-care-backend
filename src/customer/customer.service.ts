@@ -113,7 +113,10 @@ export class CustomerService {
   async update(
     id: string,
     data: Partial<
-      Pick<Customer, 'fullName' | 'phone' | 'address' | 'skinTypeId' | 'telegramUsername'>
+      Pick<
+        Customer,
+        'fullName' | 'phone' | 'address' | 'skinTypeId' | 'telegramUsername'
+      >
     >,
   ): Promise<Customer> {
     await this.repo.update(id, data);

@@ -1,4 +1,8 @@
-import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { CustomerMessage } from './customer-message.entity.js';
@@ -16,8 +20,11 @@ export class CustomerMessageService {
   ) {}
 
   async listForCustomer(customerId: string): Promise<CustomerMessage[]> {
-    const exists = await this.customerRepo.exists({ where: { id: customerId } });
-    if (!exists) throw new NotFoundException(`Customer ${customerId} not found`);
+    const exists = await this.customerRepo.exists({
+      where: { id: customerId },
+    });
+    if (!exists)
+      throw new NotFoundException(`Customer ${customerId} not found`);
 
     return this.repo.find({
       where: { customerId },
@@ -35,7 +42,10 @@ export class CustomerMessageService {
     });
   }
 
-  async recordInbound(customerId: string, body: string): Promise<CustomerMessage> {
+  async recordInbound(
+    customerId: string,
+    body: string,
+  ): Promise<CustomerMessage> {
     const msg = this.repo.create({
       customerId,
       direction: 'inbound',
@@ -50,8 +60,11 @@ export class CustomerMessageService {
     body: string,
     adminUserId: string,
   ): Promise<CustomerMessage> {
-    const customer = await this.customerRepo.findOne({ where: { id: customerId } });
-    if (!customer) throw new NotFoundException(`Customer ${customerId} not found`);
+    const customer = await this.customerRepo.findOne({
+      where: { id: customerId },
+    });
+    if (!customer)
+      throw new NotFoundException(`Customer ${customerId} not found`);
 
     const text = body.trim();
     if (!text) throw new BadRequestException('Message text is required');

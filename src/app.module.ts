@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ScheduleModule } from '@nestjs/schedule';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
 import { AdminUser } from './admin-user/admin-user.entity.js';
@@ -13,6 +14,8 @@ import { SkinAnalysis } from './skin-analysis/skin-analysis.entity.js';
 import { Order } from './order/order.entity.js';
 import { Setting } from './settings/setting.entity.js';
 import { AdminNotification } from './notification/admin-notification.entity.js';
+import { Cart } from './cart/cart.entity.js';
+import { PickupLocation } from './pickup-location/pickup-location.entity.js';
 import { AdminUserModule } from './admin-user/admin-user.module.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SeedModule } from './seed/seed.module.js';
@@ -27,9 +30,12 @@ import { OrderModule } from './order/order.module.js';
 import { ShopModule } from './shop/shop.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { NotificationModule } from './notification/notification.module.js';
+import { CartModule } from './cart/cart.module.js';
+import { PickupLocationModule } from './pickup-location/pickup-location.module.js';
 
 @Module({
   imports: [
+    ScheduleModule.forRoot(),
     ConfigModule.forRoot({ isGlobal: true }),
     TypeOrmModule.forFeature([
       AdminUser,
@@ -42,6 +48,8 @@ import { NotificationModule } from './notification/notification.module.js';
       Order,
       Setting,
       AdminNotification,
+      Cart,
+      PickupLocation,
     ]),
 
     TypeOrmModule.forRootAsync({
@@ -67,6 +75,8 @@ import { NotificationModule } from './notification/notification.module.js';
               Order,
               Setting,
               AdminNotification,
+              Cart,
+              PickupLocation,
             ],
             synchronize: true,
             ssl: { rejectUnauthorized: false },
@@ -94,6 +104,8 @@ import { NotificationModule } from './notification/notification.module.js';
             Order,
             Setting,
             AdminNotification,
+            Cart,
+            PickupLocation,
           ],
           synchronize: true,
         };
@@ -114,6 +126,8 @@ import { NotificationModule } from './notification/notification.module.js';
     ShopModule,
     SettingsModule,
     NotificationModule,
+    CartModule,
+    PickupLocationModule,
   ],
   controllers: [AppController],
   providers: [AppService],

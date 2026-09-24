@@ -6,11 +6,12 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
-import { Order, OrderStatus } from './order.entity.js';
+import { DataSource, Repository, MoreThanOrEqual } from 'typeorm';
+import { Order, OrderStatus, FulfilmentType } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 import { NotificationService } from '../notification/notification.service.js';
+import { SettingsService } from '../settings/settings.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 
 export interface PaginatedResult<T> {
@@ -27,6 +28,15 @@ export interface OrderListQuery {
   status?: OrderStatus | 'all';
 }
 
+export interface CreateOrderCustomerOptions {
+  deliveryAddress?: string | null;
+  fulfilmentType?: FulfilmentType;
+  pickupLocationId?: string | null;
+  deliveryFee?: number;
+  paymentMethod?: string | null;
+  paymentEvidence?: string | null;
+}
+
 @Injectable()
 export class OrderService {
   constructor(
@@ -38,6 +48,8 @@ export class OrderService {
     @Inject(forwardRef(() => TelegramService))
     private readonly telegramService: TelegramService,
     private readonly notificationService: NotificationService,
+    @Inject(forwardRef(() => SettingsService))
+    private readonly settingsService: SettingsService,
   ) {}
 
   private hydrateQuery() {
@@ -45,6 +57,7 @@ export class OrderService {
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.customer', 'customer')
       .leftJoinAndSelect('order.product', 'product')
+      .leftJoinAndSelect('order.pickupLocation', 'pickupLocation')
       .orderBy('order.createdAt', 'DESC');
   }
 
@@ -63,7 +76,7 @@ export class OrderService {
     const search = query.search?.trim();
     if (search) {
       qb.andWhere(
-        '(LOWER(customer.fullName) LIKE :search OR LOWER(product.name) LIKE :search OR LOWER(COALESCE(order.deliveryAddress, \'\')) LIKE :search)',
+        "(LOWER(customer.fullName) LIKE :search OR LOWER(product.name) LIKE :search OR LOWER(COALESCE(order.deliveryAddress, '')) LIKE :search)",
         { search: `%${search.toLowerCase()}%` },
       );
     }
@@ -77,7 +90,21 @@ export class OrderService {
   }
 
   async findRecent(limit = 8): Promise<Order[]> {
-    return this.hydrateQuery().take(Math.min(20, Math.max(1, limit))).getMany();
+    return this.hydrateQuery()
+      .take(Math.min(20, Math.max(1, limit)))
+      .getMany();
+  }
+
+  async findRecentByCustomer(
+    customerId: string,
+    sinceDate: Date,
+  ): Promise<Order[]> {
+    return this.orderRepository.find({
+      where: {
+        customerId,
+        createdAt: MoreThanOrEqual(sinceDate),
+      },
+    });
   }
 
   async findPageForCustomer(
@@ -107,13 +134,30 @@ export class OrderService {
   async createForCustomer(
     customerId: string,
     items: { productId: string; quantity: number }[],
-    deliveryAddress?: string | null,
+    options?: CreateOrderCustomerOptions | string | null,
   ): Promise<Order[]> {
     if (!items?.length) {
       throw new BadRequestException('Add at least one product to order');
     }
 
-    const created: Order[] = [];
+    const opts: CreateOrderCustomerOptions =
+      typeof options === 'string'
+        ? { deliveryAddress: options }
+        : options || {};
+
+    const fulfilmentType: FulfilmentType = opts.fulfilmentType ?? 'delivery';
+    const deliveryFee =
+      fulfilmentType === 'pickup' ? 0 : Number(opts.deliveryFee) || 0;
+
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    let subtotal = 0;
+    const productInfos: {
+      product: Product;
+      quantity: number;
+      unitPrice: number;
+    }[] = [];
     for (const line of items) {
       const quantity = Math.floor(Number(line.quantity));
       if (!Number.isFinite(quantity) || quantity < 1) {
@@ -127,21 +171,57 @@ export class OrderService {
         throw new NotFoundException(`Product ${line.productId} not found`);
       }
 
+      const unitPrice = effectiveUnitPrice(
+        product.price,
+        product.discountPercent,
+        product.discountEndsAt,
+      );
+      subtotal += unitPrice * quantity;
+      productInfos.push({ product, quantity, unitPrice });
+    }
+
+    const grandTotal = subtotal + deliveryFee;
+    const totalAdvance = Math.round(grandTotal * 0.5 * 100) / 100;
+
+    const initialStatus: OrderStatus = opts.paymentEvidence
+      ? 'payment_submitted'
+      : 'awaiting_payment';
+
+    const created: Order[] = [];
+    for (let i = 0; i < productInfos.length; i++) {
+      const { product, quantity, unitPrice } = productInfos[i];
+      const lineCost = unitPrice * quantity;
+      const lineDeliveryFee = i === 0 ? deliveryFee : 0;
+      const lineAdvance =
+        subtotal > 0
+          ? Math.round((lineCost + lineDeliveryFee) * 0.5 * 100) / 100
+          : 0;
+
       const order = await this.create({
         customerId,
         productId: product.id,
-        cost: effectiveUnitPrice(
-          product.price,
-          product.discountPercent,
-          product.discountEndsAt,
-        ),
+        cost: unitPrice,
         quantity,
-        deliveryAddress: deliveryAddress ?? null,
+        deliveryAddress: opts.deliveryAddress ?? null,
+        status: initialStatus,
+        fulfilmentType,
+        pickupLocationId: opts.pickupLocationId ?? null,
+        deliveryFee: lineDeliveryFee,
+        expectedDeliveryDate: tomorrow,
+        advancePaymentAmount: lineAdvance,
+        paymentMethod: opts.paymentMethod ?? null,
+        paymentEvidence: opts.paymentEvidence ?? null,
+        paymentSubmittedAt: opts.paymentEvidence ? new Date() : null,
       });
       created.push(order);
     }
 
-    void this.notifyCustomerShopOrdersPlaced(created);
+    void this.notifyCustomerShopOrdersPlaced(
+      created,
+      grandTotal,
+      totalAdvance,
+      deliveryFee,
+    );
     return created;
   }
 
@@ -173,6 +253,14 @@ export class OrderService {
     quantity: number;
     deliveryAddress?: string | null;
     status?: OrderStatus;
+    fulfilmentType?: FulfilmentType;
+    pickupLocationId?: string | null;
+    deliveryFee?: number;
+    expectedDeliveryDate?: Date | null;
+    advancePaymentAmount?: number;
+    paymentMethod?: string | null;
+    paymentEvidence?: string | null;
+    paymentSubmittedAt?: Date | null;
   }): Promise<Order> {
     const quantity = Math.floor(Number(data.quantity));
     if (!Number.isFinite(quantity) || quantity < 1) {
@@ -200,8 +288,16 @@ export class OrderService {
         cost: data.cost,
         quantity,
         deliveryAddress: data.deliveryAddress?.trim() || null,
-        status: data.status ?? 'pending',
+        status: data.status ?? 'awaiting_payment',
         stockReserved: true,
+        fulfilmentType: data.fulfilmentType ?? 'delivery',
+        pickupLocationId: data.pickupLocationId ?? null,
+        deliveryFee: data.deliveryFee ?? 0,
+        expectedDeliveryDate: data.expectedDeliveryDate ?? null,
+        advancePaymentAmount: data.advancePaymentAmount ?? 0,
+        paymentMethod: data.paymentMethod ?? null,
+        paymentEvidence: data.paymentEvidence ?? null,
+        paymentSubmittedAt: data.paymentSubmittedAt ?? null,
       });
       const saved = await em.save(order);
       return saved.id;
@@ -217,25 +313,61 @@ export class OrderService {
     return this.updateStatus(id, 'cancelled', { cancelledBy: 'customer' });
   }
 
+  /** Customer submits payment evidence */
+  async submitPaymentEvidence(
+    orderId: string,
+    customerId: string,
+    evidence: {
+      paymentMethod: 'bank' | 'telebirr';
+      paymentEvidence: string;
+    },
+  ): Promise<Order> {
+    const order = await this.findOneForCustomer(orderId, customerId);
+    if (order.status !== 'awaiting_payment' && order.status !== 'pending') {
+      throw new BadRequestException(
+        `Order is not awaiting payment (current status: ${order.status})`,
+      );
+    }
+    order.paymentMethod = evidence.paymentMethod;
+    order.paymentEvidence = evidence.paymentEvidence;
+    order.paymentSubmittedAt = new Date();
+    order.status = 'payment_submitted';
+    await this.orderRepository.save(order);
+
+    const updated = await this.findOne(order.id);
+    void this.notifyAdminsPaymentSubmitted(updated);
+    return updated;
+  }
+
+  /** Admin verifies payment -> confirmed */
+  async verifyPayment(orderId: string): Promise<Order> {
+    return this.updateStatus(orderId, 'confirmed');
+  }
+
+  /** Admin rejects payment -> reverts to awaiting_payment */
+  async rejectPayment(orderId: string): Promise<Order> {
+    const order = await this.findOne(orderId);
+    order.status = 'awaiting_payment';
+    order.paymentEvidence = null;
+    order.paymentSubmittedAt = null;
+    await this.orderRepository.save(order);
+    return this.findOne(orderId);
+  }
+
   /**
-   * Stock is reserved on create.
-   * pending → delivered: keep reservation, notify customer (non-blocking)
-   * pending → cancelled: restore reserved stock
+   * Update order status.
+   * Restores reserved stock on cancel.
    */
   async updateStatus(
     id: string,
     status: OrderStatus,
     meta?: { cancelledBy?: 'customer' | 'admin' },
   ): Promise<Order> {
-    if (status !== 'delivered' && status !== 'cancelled') {
-      throw new BadRequestException('Status must be delivered or cancelled');
-    }
-
     const order = await this.findOne(id);
-    if (order.status !== 'pending') {
-      throw new BadRequestException(
-        `Only pending orders can be updated (current: ${order.status})`,
-      );
+    const oldStatus = order.status;
+
+    if (oldStatus === status) {
+      return order;
     }
 
     const qty = Math.max(1, order.quantity ?? 1);
@@ -246,6 +378,7 @@ export class OrderService {
         'stock',
         qty,
       );
+      order.stockReserved = false;
     }
 
     if (status === 'delivered' && !order.stockReserved) {
@@ -260,9 +393,18 @@ export class OrderService {
       }
     }
 
+    if (status === 'confirmed' && !order.paymentVerifiedAt) {
+      order.paymentVerifiedAt = new Date();
+    }
+
     order.status = status;
     await this.orderRepository.save(order);
     const updated = await this.findOne(id);
+
+    if (status === 'confirmed') {
+      void this.notifyCustomerPaymentVerified(updated);
+      void this.notifyAdminsPaymentVerified(updated);
+    }
 
     if (status === 'delivered') {
       void this.notifyCustomerDelivered(updated);
@@ -283,33 +425,70 @@ export class OrderService {
   }
 
   /** Notify after Mini App checkout (separate from bot-native order replies). */
-  private async notifyCustomerShopOrdersPlaced(orders: Order[]): Promise<void> {
+  private async notifyCustomerShopOrdersPlaced(
+    orders: Order[],
+    grandTotal: number,
+    totalAdvance: number,
+    deliveryFee: number,
+  ): Promise<void> {
     if (!orders.length) return;
     const first = orders[0];
     const telegramId = first.customer?.telegramId;
     if (telegramId == null) return;
 
     const name = first.customer?.fullName ?? 'there';
-    const address = first.deliveryAddress?.trim();
     const lines = orders.map((order) => {
       const qty = order.quantity ?? 1;
       const unit = Number(order.cost) || 0;
       const productName = order.product?.name ?? 'Product';
       return `• ${productName} × ${qty} — ${(unit * qty).toFixed(2)} ETB`;
     });
-    const grandTotal = orders.reduce((sum, order) => {
-      const qty = order.quantity ?? 1;
-      return sum + (Number(order.cost) || 0) * qty;
-    }, 0);
+
+    const isPickup = first.fulfilmentType === 'pickup';
+    const pickupLocName = first.pickupLocation?.name;
+    const supportPhone = await this.settingsService.getSupportPhone();
+
+    let text =
+      `🛒 Order placed in the shop, ${name}!\n\n` + `${lines.join('\n')}\n\n`;
+
+    if (isPickup) {
+      text += `📍 Fulfilment: Store Pickup\n`;
+      if (pickupLocName) text += `🏢 Location: ${pickupLocName}\n`;
+    } else {
+      if (deliveryFee > 0)
+        text += `🚚 Delivery fee: ${deliveryFee.toFixed(2)} ETB\n`;
+      if (first.deliveryAddress)
+        text += `📍 Delivery: ${first.deliveryAddress.trim()}\n`;
+    }
+
+    text +=
+      `💰 Total: ${grandTotal.toFixed(2)} ETB\n` +
+      `💵 50% Advance: ${totalAdvance.toFixed(2)} ETB\n` +
+      `⏳ Status: ${first.status}\n\n` +
+      `📞 Need help? Contact us: ${supportPhone}\n` +
+      `Track status anytime in Products → My orders.`;
+
+    await this.telegramService.sendMessageSafe(String(telegramId), text);
+  }
+
+  private async notifyCustomerPaymentVerified(order: Order): Promise<void> {
+    const telegramId = order.customer?.telegramId;
+    if (telegramId == null) return;
+
+    const name = order.customer?.fullName ?? 'there';
+    const productName = order.product?.name ?? 'your product';
+    const expected = order.expectedDeliveryDate
+      ? new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+        })
+      : 'Tomorrow';
 
     const text =
-      `🛒 Order placed in the shop, ${name}!\n\n` +
-      `${lines.join('\n')}\n\n` +
-      `💰 Total: ${grandTotal.toFixed(2)} ETB\n` +
-      (address ? `📍 Delivery: ${address}\n` : '') +
-      `⏳ Status: pending\n\n` +
-      `We'll contact you soon to confirm delivery.\n` +
-      `Track status anytime in Products → My orders.`;
+      `✅ Payment verified, ${name}!\n\n` +
+      `Your order for ${productName} has been confirmed.\n` +
+      `📅 Expected ${order.fulfilmentType === 'pickup' ? 'ready for pickup' : 'delivery'}: ${expected}\n\n` +
+      `We're preparing your order! 🌿`;
 
     await this.telegramService.sendMessageSafe(String(telegramId), text);
   }
@@ -356,6 +535,31 @@ export class OrderService {
       type: 'order_placed',
       title: 'New order placed',
       body: `${customer} ordered ${product} × ${qty} · ${total.toFixed(2)} ETB`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
+  }
+
+  private async notifyAdminsPaymentSubmitted(order: Order): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    const advance = Number(order.advancePaymentAmount) || 0;
+    await this.notificationService.create({
+      type: 'payment_submitted',
+      title: 'Payment submitted',
+      body: `${customer} submitted 50% advance (${advance.toFixed(2)} ETB) for ${product} via ${order.paymentMethod || 'Evidence'}`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
+  }
+
+  private async notifyAdminsPaymentVerified(order: Order): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    await this.notificationService.create({
+      type: 'payment_verified',
+      title: 'Payment verified',
+      body: `Payment verified for ${customer} · ${product}`,
       orderId: order.id,
       href: '/admin/orders',
     });

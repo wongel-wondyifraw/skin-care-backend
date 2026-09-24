@@ -52,7 +52,9 @@ export function validateTelegramWebAppInitData(
   pairs.sort();
   const dataCheckString = pairs.join('\n');
 
-  const secretKey = createHmac('sha256', 'WebAppData').update(botToken).digest();
+  const secretKey = createHmac('sha256', 'WebAppData')
+    .update(botToken)
+    .digest();
   const computed = createHmac('sha256', secretKey)
     .update(dataCheckString)
     .digest('hex');

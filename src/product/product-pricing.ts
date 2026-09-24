@@ -8,7 +8,10 @@ export function clampDiscountPercent(value: unknown): number {
   return Math.min(100, n);
 }
 
-export function isDiscountExpired(discountEndsAt: unknown, now = Date.now()): boolean {
+export function isDiscountExpired(
+  discountEndsAt: unknown,
+  now = Date.now(),
+): boolean {
   if (discountEndsAt == null || discountEndsAt === '') return false;
   const end = new Date(discountEndsAt as string | Date).getTime();
   if (!Number.isFinite(end)) return false;

@@ -70,9 +70,7 @@ export class ProductController {
       stock,
       sort,
       discounted:
-        discounted === '1' ||
-        discounted === 'true' ||
-        discounted === 'yes',
+        discounted === '1' || discounted === 'true' || discounted === 'yes',
     });
   }
 

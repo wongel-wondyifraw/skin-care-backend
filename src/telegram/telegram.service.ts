@@ -13,9 +13,13 @@ export class TelegramService {
 
   constructor(@InjectBot() private readonly bot: Telegraf) {}
 
-  async sendMessage(chatId: string, text: string): Promise<void> {
+  async sendMessage(
+    chatId: string,
+    text: string,
+    extra?: Parameters<Telegraf['telegram']['sendMessage']>[2],
+  ): Promise<void> {
     try {
-      await this.bot.telegram.sendMessage(chatId, text);
+      await this.bot.telegram.sendMessage(chatId, text, extra);
       this.logger.log(`Message sent to chatId=${chatId}`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -27,9 +31,13 @@ export class TelegramService {
   }
 
   /** Best-effort notify — logs failures and does not throw. */
-  async sendMessageSafe(chatId: string, text: string): Promise<boolean> {
+  async sendMessageSafe(
+    chatId: string,
+    text: string,
+    extra?: Parameters<Telegraf['telegram']['sendMessage']>[2],
+  ): Promise<boolean> {
     try {
-      await this.bot.telegram.sendMessage(chatId, text);
+      await this.bot.telegram.sendMessage(chatId, text, extra);
       this.logger.log(`Message sent to chatId=${chatId}`);
       return true;
     } catch (err) {

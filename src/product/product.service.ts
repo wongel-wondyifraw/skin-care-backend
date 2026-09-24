@@ -174,7 +174,7 @@ export class ProductService implements OnModuleInit {
     const search = query.search?.trim();
     if (search) {
       qb.andWhere(
-        '(LOWER(product.name) LIKE :search OR LOWER(COALESCE(product.brand, \'\')) LIKE :search)',
+        "(LOWER(product.name) LIKE :search OR LOWER(COALESCE(product.brand, '')) LIKE :search)",
         { search: `%${search.toLowerCase()}%` },
       );
     }
@@ -209,8 +209,8 @@ export class ProductService implements OnModuleInit {
     const items = await qb.getMany();
     const total = await qb
       .clone()
-      .skip(undefined as never)
-      .take(undefined as never)
+      .skip(undefined)
+      .take(undefined)
       .orderBy()
       .select('product.id')
       .distinct(true)
@@ -284,7 +284,9 @@ export class ProductService implements OnModuleInit {
     if (pct > 0 && durationHours != null) {
       const hours = Number(durationHours);
       if (!Number.isFinite(hours) || hours <= 0) {
-        throw new BadRequestException('durationHours must be a positive number');
+        throw new BadRequestException(
+          'durationHours must be a positive number',
+        );
       }
       discountEndsAt = new Date(Date.now() + hours * 60 * 60 * 1000);
     }
@@ -314,7 +316,9 @@ export class ProductService implements OnModuleInit {
     return allSkin;
   }
 
-  private async resolveSkinTypes(input: ProductWriteInput): Promise<SkinType[]> {
+  private async resolveSkinTypes(
+    input: ProductWriteInput,
+  ): Promise<SkinType[]> {
     const ids = [
       ...new Set(
         (input.skinTypeIds ?? [])
