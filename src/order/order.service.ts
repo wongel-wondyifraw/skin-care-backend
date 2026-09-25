@@ -760,70 +760,62 @@ export class OrderService {
   /** Notify after Mini App checkout (separate from bot-native order replies). */
   private async notifyCustomerShopOrdersPlaced(
     orders: Order[],
-    grandTotal: number,
+    _grandTotal: number,
     totalAdvance: number,
-    deliveryFee: number,
+    _deliveryFee: number,
   ): Promise<void> {
     if (!orders.length) return;
     const first = orders[0];
     const telegramId = first.customer?.telegramId;
     if (telegramId == null) return;
 
-    const name = first.customer?.fullName ?? 'there';
-    const lines = orders.map((order) => {
-      const qty = order.quantity ?? 1;
-      const unit = Number(order.cost) || 0;
-      const productName = order.product?.name ?? 'Product';
-      return `• ${productName} × ${qty} — ${(unit * qty).toFixed(2)} ETB`;
+    const expected = first.expectedDeliveryDate
+      ? new Date(first.expectedDeliveryDate).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+        })
+      : 'Tomorrow';
+    const location =
+      first.fulfilmentType === 'pickup'
+        ? first.pickupLocation?.name || 'Store pickup'
+        : first.deliveryAddress?.trim() || 'Delivery';
+
+    const text =
+      `✅ *Order placed*\n\n` +
+      `💵 Prepayment: *${totalAdvance.toFixed(2)} ETB*\n` +
+      `📅 Expected: *${expected}*\n` +
+      `📍 ${location}`;
+
+    await this.telegramService.sendMessageSafe(String(telegramId), text, {
+      parse_mode: 'Markdown',
     });
-
-    const isPickup = first.fulfilmentType === 'pickup';
-    const pickupLocName = first.pickupLocation?.name;
-    const supportPhone = await this.settingsService.getSupportPhone();
-
-    let text =
-      `🛒 Order placed in the shop, ${name}!\n\n` + `${lines.join('\n')}\n\n`;
-
-    if (isPickup) {
-      text += `📍 Fulfilment: Store Pickup\n`;
-      if (pickupLocName) text += `🏢 Location: ${pickupLocName}\n`;
-    } else {
-      if (deliveryFee > 0)
-        text += `🚚 Delivery fee: ${deliveryFee.toFixed(2)} ETB\n`;
-      if (first.deliveryAddress)
-        text += `📍 Delivery: ${first.deliveryAddress.trim()}\n`;
-    }
-
-    text +=
-      `💰 Total: ${grandTotal.toFixed(2)} ETB\n` +
-      `💵 50% Advance: ${totalAdvance.toFixed(2)} ETB\n` +
-      `⏳ Status: ${first.status}\n\n` +
-      `📞 Need help? Contact us: ${supportPhone}\n` +
-      `Track status anytime in Products → My orders.`;
-
-    await this.telegramService.sendMessageSafe(String(telegramId), text);
   }
 
   private async notifyCustomerPaymentVerified(order: Order): Promise<void> {
     const telegramId = order.customer?.telegramId;
     if (telegramId == null) return;
 
-    const name = order.customer?.fullName ?? 'there';
-    const productName = order.product?.name ?? 'your product';
     const expected = order.expectedDeliveryDate
       ? new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
           month: 'short',
           day: 'numeric',
         })
       : 'Tomorrow';
+    const location =
+      order.fulfilmentType === 'pickup'
+        ? order.pickupLocation?.name || 'Store pickup'
+        : order.deliveryAddress?.trim() || 'Delivery';
+    const advance = Number(order.advancePaymentAmount) || 0;
 
     const text =
-      `✅ Payment verified, ${name}!\n\n` +
-      `Your order for ${productName} has been confirmed.\n` +
-      `📅 Expected ${order.fulfilmentType === 'pickup' ? 'ready for pickup' : 'delivery'}: ${expected}\n\n` +
-      `We're preparing your order! 🌿`;
+      `✅ *Payment confirmed*\n\n` +
+      `💵 Prepayment: *${advance.toFixed(2)} ETB*\n` +
+      `📅 Expected: *${expected}*\n` +
+      `📍 ${location}`;
 
-    await this.telegramService.sendMessageSafe(String(telegramId), text);
+    await this.telegramService.sendMessageSafe(String(telegramId), text, {
+      parse_mode: 'Markdown',
+    });
   }
 
   private async notifyCustomerDelivered(order: Order): Promise<void> {

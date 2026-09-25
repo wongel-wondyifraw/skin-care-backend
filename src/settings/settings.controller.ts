@@ -10,7 +10,6 @@ import { Type } from 'class-transformer';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard.js';
 import {
   SettingsService,
-  DeliveryZone,
   PaymentInfo,
   DeliveryOrigin,
   DeliveryRate,
@@ -23,12 +22,6 @@ class UpdateShopSettingsDto {
   trendingProductIds?: string[];
 
   @IsOptional()
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => DeliveryZone)
-  deliveryZones?: DeliveryZone[];
-
-  @IsOptional()
   @ValidateNested()
   @Type(() => PaymentInfo)
   paymentInfo?: PaymentInfo;
@@ -36,13 +29,6 @@ class UpdateShopSettingsDto {
   @IsOptional()
   @IsString()
   supportPhone?: string;
-}
-
-class SetDeliveryZonesDto {
-  @IsArray()
-  @ValidateNested({ each: true })
-  @Type(() => DeliveryZone)
-  zones: DeliveryZone[];
 }
 
 @UseGuards(JwtAuthGuard)
@@ -58,16 +44,6 @@ export class SettingsController {
   @Put('shop')
   updateShop(@Body() body: UpdateShopSettingsDto) {
     return this.settingsService.updateShopSettings(body);
-  }
-
-  @Get('delivery-zones')
-  getDeliveryZones() {
-    return this.settingsService.getDeliveryZones();
-  }
-
-  @Put('delivery-zones')
-  setDeliveryZones(@Body() body: SetDeliveryZonesDto) {
-    return this.settingsService.setDeliveryZones(body.zones);
   }
 
   @Get('delivery-origin')

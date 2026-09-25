@@ -31,23 +31,39 @@ export class PickupLocationService {
     name: string;
     address: string;
     enabled?: boolean;
+    lat?: number | null;
+    lon?: number | null;
   }): Promise<PickupLocation> {
     const loc = this.repo.create({
       name: data.name.trim(),
       address: data.address.trim(),
       enabled: data.enabled ?? true,
+      lat: data.lat != null ? Number(data.lat) : null,
+      lon: data.lon != null ? Number(data.lon) : null,
     });
     return this.repo.save(loc);
   }
 
   async update(
     id: string,
-    data: { name?: string; address?: string; enabled?: boolean },
+    data: {
+      name?: string;
+      address?: string;
+      enabled?: boolean;
+      lat?: number | null;
+      lon?: number | null;
+    },
   ): Promise<PickupLocation> {
     const loc = await this.findOne(id);
     if (data.name !== undefined) loc.name = data.name.trim();
     if (data.address !== undefined) loc.address = data.address.trim();
     if (data.enabled !== undefined) loc.enabled = data.enabled;
+    if (data.lat !== undefined) {
+      loc.lat = data.lat != null ? Number(data.lat) : null;
+    }
+    if (data.lon !== undefined) {
+      loc.lon = data.lon != null ? Number(data.lon) : null;
+    }
     return this.repo.save(loc);
   }
 

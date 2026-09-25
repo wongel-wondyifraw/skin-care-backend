@@ -35,6 +35,8 @@ export class PickupLocationController {
       name: string;
       address: string;
       enabled?: boolean;
+      lat?: number | null;
+      lon?: number | null;
     },
   ) {
     return this.pickupLocationService.create(body);
@@ -48,6 +50,8 @@ export class PickupLocationController {
       name?: string;
       address?: string;
       enabled?: boolean;
+      lat?: number | null;
+      lon?: number | null;
     },
   ) {
     return this.pickupLocationService.update(id, body);

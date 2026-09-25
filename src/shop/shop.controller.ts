@@ -324,12 +324,6 @@ export class ShopController {
   }
 
   @UseGuards(CustomerJwtAuthGuard)
-  @Get('delivery-zones')
-  getDeliveryZones() {
-    return this.settingsService.getDeliveryZones();
-  }
-
-  @UseGuards(CustomerJwtAuthGuard)
   @Get('delivery-fee')
   getDeliveryFee(@Query('lat') lat?: string, @Query('lon') lon?: string) {
     if (lat && lon) {
@@ -338,7 +332,13 @@ export class ShopController {
         parseFloat(lon),
       );
     }
-    return { distanceKm: 0, fee: 350, durationMinutes: 0, withinRadius: true };
+    return {
+      distanceKm: 0,
+      fee: 350,
+      durationMinutes: 0,
+      withinRadius: true,
+      bandLabel: null,
+    };
   }
 
   @UseGuards(CustomerJwtAuthGuard)

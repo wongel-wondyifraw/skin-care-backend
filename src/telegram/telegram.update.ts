@@ -14,6 +14,7 @@ import { SkinAnalysisService } from '../skin-analysis/skin-analysis.service.js';
 import { CustomerMessageService } from '../customer/customer-message.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PickupLocationService } from '../pickup-location/pickup-location.service.js';
+import { LocationIqService } from '../location/locationiq.service.js';
 import { CartService } from '../cart/cart.service.js';
 import { effectiveUnitPrice } from '../product/product-pricing.js';
 import {
@@ -66,6 +67,7 @@ export class TelegramUpdate {
     private readonly settingsService: SettingsService,
     private readonly pickupLocationService: PickupLocationService,
     private readonly cartService: CartService,
+    private readonly locationIqService: LocationIqService,
   ) {}
 
   private shopWebAppUrl(): string | null {
@@ -1008,7 +1010,7 @@ export class TelegramUpdate {
 
     // ── Order flow ───────────────────────────────────────────────
     if (orderSession) {
-      await this.handleOrderFlow(ctx, chatId, orderSession, text);
+      await this.handleOrderFlow(ctx, chatId, orderSession, text, message);
       return;
     }
 
@@ -1374,6 +1376,9 @@ export class TelegramUpdate {
     chatId: string,
     session: OrderSession,
     text: string,
+    message: Message.TextMessage &
+      Message.ContactMessage &
+      Message.LocationMessage,
   ) {
     if (text === '❌ Cancel order') {
       this.orderSessions.delete(chatId);
@@ -1445,43 +1450,18 @@ export class TelegramUpdate {
     if (session.step === 'awaiting_fulfilment_type') {
       if (text.includes('Delivery') || text.includes('🚚')) {
         session.fulfilmentType = 'delivery';
-        const customer = await this.customerService.findOne(session.customerId);
-        if (customer?.address && customer.address.trim()) {
-          const feeRes = await this.settingsService.calculateDeliveryFee(
-            customer.address,
-          );
-          session.deliveryAddress = customer.address.trim();
-          session.deliveryFee = feeRes.fee;
-          this.orderSessions.set(chatId, session);
-
-          await ctx.reply(
-            `📍 *Saved Address:* ${customer.address}\n` +
-              `🚚 *Delivery Fee:* ${feeRes.fee.toFixed(2)} ETB (${feeRes.zone})\n\n` +
-              `Would you like to deliver to this address?`,
-            {
-              parse_mode: 'Markdown',
-              reply_markup: {
-                keyboard: [
-                  [{ text: '✅ Use Saved Address' }],
-                  [{ text: '📝 Change Address' }],
-                  [{ text: '❌ Cancel order' }],
-                ],
-                resize_keyboard: true,
-                one_time_keyboard: true,
-              },
-            },
-          );
-          return;
-        }
-
-        // No saved address, ask for one
         session.step = 'awaiting_delivery_address';
         this.orderSessions.set(chatId, session);
         await ctx.reply(
-          `📍 Please enter your delivery address / neighborhood in Addis Ababa (e.g., Bole, CMC, Kazanchis):`,
+          `📍 *Share your delivery location*\n\n` +
+            `Tap *Share location* so we can calculate the exact delivery fee from the map.`,
           {
+            parse_mode: 'Markdown',
             reply_markup: {
-              keyboard: [[{ text: '❌ Cancel order' }]],
+              keyboard: [
+                [{ text: '📍 Share location', request_location: true }],
+                [{ text: '❌ Cancel order' }],
+              ],
               resize_keyboard: true,
               one_time_keyboard: true,
             },
@@ -1490,7 +1470,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text.includes('Pickup') || text.includes('📍')) {
+      if (text.includes('Pickup') || text.includes('📍 Store') || text === '📍 Store Pickup') {
         session.fulfilmentType = 'pickup';
         session.deliveryFee = 0;
         const locations = await this.pickupLocationService.findEnabled();
@@ -1537,20 +1517,34 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Delivery address handling ──
-    if (text === '✅ Use Saved Address') {
-      await this.sendPaymentPrompt(ctx, chatId, session);
+    // ── Delivery: GPS location (map picker) ──
+    if (
+      session.step === 'awaiting_delivery_address' &&
+      'location' in message &&
+      message.location
+    ) {
+      await this.applyBotDeliveryLocation(
+        ctx,
+        chatId,
+        session,
+        message.location.latitude,
+        message.location.longitude,
+      );
       return;
     }
 
-    if (text === '📝 Change Address') {
+    // Legacy "use saved" / change — redirect to map share
+    if (text === '✅ Use Saved Address' || text === '📝 Change Address') {
       session.step = 'awaiting_delivery_address';
       this.orderSessions.set(chatId, session);
       await ctx.reply(
-        `📍 Please enter your delivery address / neighborhood in Addis Ababa:`,
+        `📍 Please share your delivery location from the map:`,
         {
           reply_markup: {
-            keyboard: [[{ text: '❌ Cancel order' }]],
+            keyboard: [
+              [{ text: '📍 Share location', request_location: true }],
+              [{ text: '❌ Cancel order' }],
+            ],
             resize_keyboard: true,
             one_time_keyboard: true,
           },
@@ -1560,11 +1554,20 @@ export class TelegramUpdate {
     }
 
     if (session.step === 'awaiting_delivery_address') {
-      const address = text.trim();
-      const feeRes = await this.settingsService.calculateDeliveryFee(address);
-      session.deliveryAddress = address;
-      session.deliveryFee = feeRes.fee;
-      await this.sendPaymentPrompt(ctx, chatId, session);
+      await ctx.reply(
+        `Please use the *Share location* button so we can price delivery accurately.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              [{ text: '📍 Share location', request_location: true }],
+              [{ text: '❌ Cancel order' }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
       return;
     }
 
@@ -1583,6 +1586,21 @@ export class TelegramUpdate {
       if (found) {
         session.pickupLocationId = found.id;
         session.pickupLocationName = found.name;
+        this.orderSessions.set(chatId, session);
+
+        const lat = found.lat != null ? Number(found.lat) : null;
+        const lon = found.lon != null ? Number(found.lon) : null;
+        if (lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon)) {
+          try {
+            await ctx.replyWithLocation(lat, lon);
+            await ctx.reply(`📍 *${found.name}*\n${found.address}`, {
+              parse_mode: 'Markdown',
+            });
+          } catch {
+            // ignore map send failures
+          }
+        }
+
         await this.sendPaymentPrompt(ctx, chatId, session);
         return;
       }
@@ -1622,6 +1640,63 @@ export class TelegramUpdate {
     }
   }
 
+  private async applyBotDeliveryLocation(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+    lat: number,
+    lon: number,
+  ) {
+    await ctx.reply(`⏳ Calculating delivery fee…`);
+
+    const feeRes = await this.locationIqService.calculateDeliveryFee(lat, lon);
+    if (!feeRes.withinRadius) {
+      await ctx.reply(
+        `❌ That location is outside our delivery area` +
+          (feeRes.distanceKm
+            ? ` (${feeRes.distanceKm.toFixed(1)} km away)`
+            : '') +
+          `.\n\nPlease share a closer location or choose *Store Pickup*.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              [{ text: '📍 Share location', request_location: true }],
+              [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
+              [{ text: '❌ Cancel order' }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+      session.step = 'awaiting_fulfilment_type';
+      this.orderSessions.set(chatId, session);
+      return;
+    }
+
+    const reverse = await this.locationIqService.reverseGeocode(lat, lon);
+    session.deliveryLat = lat;
+    session.deliveryLon = lon;
+    session.deliveryDistanceKm = feeRes.distanceKm;
+    session.deliveryFee = feeRes.fee;
+    session.deliveryAddress = 'Your location';
+    if (reverse?.displayName) {
+      session.deliveryAddress = `Your location · ${reverse.displayName.split(',').slice(0, 2).join(',').trim()}`;
+    }
+    this.orderSessions.set(chatId, session);
+
+    await ctx.reply(
+      `📍 *Your location*\n` +
+        `🚚 Delivery fee: *${feeRes.fee.toFixed(2)} ETB*` +
+        (feeRes.bandLabel ? ` (${feeRes.bandLabel})` : '') +
+        `\n📏 ~${feeRes.distanceKm.toFixed(1)} km`,
+      { parse_mode: 'Markdown' },
+    );
+
+    await this.sendPaymentPrompt(ctx, chatId, session);
+  }
+
   private async sendPaymentPrompt(
     ctx: Context,
     chatId: string,
@@ -1650,28 +1725,19 @@ export class TelegramUpdate {
     });
 
     const isPickup = session.fulfilmentType === 'pickup';
-    const fulfilmentLine = isPickup
-      ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}`
-      : `📍 *Delivery Address:* ${session.deliveryAddress}\n🚚 *Delivery Fee:* ${deliveryFee.toFixed(2)} ETB`;
+    const locationLine = isPickup
+      ? `📍 ${session.pickupLocationName || 'Store pickup'}`
+      : `📍 ${session.deliveryAddress || 'Your location'}`;
 
     const message =
-      `💳 *Payment & Order Summary:*\n\n` +
-      `🌿 *Product:* ${session.productName} × ${qty} = ${subtotal.toFixed(2)} ETB\n` +
-      `${fulfilmentLine}\n` +
-      `───────────────────────\n` +
-      `💰 *Total:* ${grandTotal.toFixed(2)} ETB\n` +
-      `💵 *50% Advance Required:* ${advance.toFixed(2)} ETB\n` +
-      `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
-      `📅 *Expected ${isPickup ? 'Ready' : 'Delivery'}:* ${expectedDate}\n\n` +
-      `📌 *Pay 50% advance (${advance.toFixed(2)} ETB) to confirm:*\n` +
-      `🏦 *Bank Transfer:* ${bank.bankName}\n` +
-      `   • Account: \`${bank.accountNumber}\`\n` +
-      `   • Name: ${bank.accountName}\n\n` +
-      `📱 *Telebirr:*\n` +
-      `   • Phone: \`${telebirr.phoneNumber}\`\n` +
-      `   • Name: ${telebirr.accountName}\n\n` +
-      `📸 *Next Step:*\n` +
-      `How did you make your payment?`;
+      `*Order summary*\n\n` +
+      `${session.productName} × ${qty}\n` +
+      `${locationLine}\n` +
+      `📅 Expected: ${expectedDate}\n` +
+      `💵 Pay now (50%): *${advance.toFixed(2)} ETB*\n\n` +
+      `🏦 CBE: \`${bank.accountNumber}\` (${bank.accountName})\n` +
+      `📱 Telebirr: \`${telebirr.phoneNumber}\`\n\n` +
+      `How did you pay?`;
 
     await ctx.reply(message, {
       parse_mode: 'Markdown',
@@ -1738,14 +1804,13 @@ export class TelegramUpdate {
     paymentEvidence: string,
     paymentMethod: string,
   ) {
-    const quantity = session.quantity ?? 1;
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     try {
+      const quantity = session.quantity ?? 1;
       const total = session.totalCost ?? session.cost * quantity;
       const advance = session.advancePaymentAmount ?? total * 0.5;
-      const remaining = total - advance;
 
       const v = await this.orderService.verifyEvidence(
         paymentMethod as 'bank' | 'telebirr',
@@ -1771,6 +1836,9 @@ export class TelegramUpdate {
         cost: session.cost,
         quantity,
         deliveryAddress: session.deliveryAddress ?? null,
+        deliveryLat: session.deliveryLat ?? null,
+        deliveryLon: session.deliveryLon ?? null,
+        deliveryDistanceKm: session.deliveryDistanceKm ?? null,
         status: isVerified ? 'confirmed' : 'payment_submitted',
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
@@ -1792,65 +1860,37 @@ export class TelegramUpdate {
         month: 'short',
         day: 'numeric',
       });
+      const location =
+        session.fulfilmentType === 'pickup'
+          ? session.pickupLocationName || 'Store pickup'
+          : session.deliveryAddress || 'Your location';
 
-      if (isVerified) {
-        await ctx.reply(
-          `✅ *Order Confirmed — Payment Verified!*\n\n` +
-            `🌿 *${session.productName}* × ${quantity}\n` +
-            `💰 *Total:* ${total.toFixed(2)} ETB\n` +
-            `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Verified)\n` +
-            `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
-            `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
-            (session.fulfilmentType === 'pickup'
-              ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
-              : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
-            `Your payment was verified automatically. We are preparing your order! 🌿\n\n` +
-            `📞 *Need help? Contact us:* ${supportPhone}`,
-          {
-            parse_mode: 'Markdown',
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  {
-                    text: '❌ Cancel order',
-                    callback_data: `cancel_order_${order.id}`,
-                  },
-                ],
-              ],
-            },
-          },
-        );
-      } else {
-        await ctx.reply(
-          `⏳ *Order received — verifying payment…*\n\n` +
-            `🌿 *${session.productName}* × ${quantity}\n` +
-            `💰 *Total:* ${total.toFixed(2)} ETB\n` +
-            `💵 *50% Advance:* ${advance.toFixed(2)} ETB\n` +
-            `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
-            `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
-            (session.fulfilmentType === 'pickup'
-              ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
-              : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
-            `We're confirming your payment with the bank. You'll get a Telegram message once it's verified. 🌿\n\n` +
-            `📞 *Need help? Contact us:* ${supportPhone}`,
-          {
-            parse_mode: 'Markdown',
-            reply_markup: {
-              inline_keyboard: [
-                [
-                  {
-                    text: '❌ Cancel order',
-                    callback_data: `cancel_order_${order.id}`,
-                  },
-                ],
-              ],
-            },
-          },
-        );
+      const summary =
+        `${isVerified ? '✅ *Order confirmed*' : '⏳ *Order placed — verifying payment*'}\n\n` +
+        `💵 Prepayment: *${advance.toFixed(2)} ETB*\n` +
+        `📅 Expected: *${expectedDate}*\n` +
+        `📍 ${location}` +
+        (isVerified ? '' : `\n\nWe'll message you when payment is confirmed.`);
+
+      await ctx.reply(summary, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              {
+                text: '❌ Cancel order',
+                callback_data: `cancel_order_${order.id}`,
+              },
+            ],
+          ],
+        },
+      });
+
+      if (!isVerified) {
         this.orderService.scheduleFinishQueuedVerification([order], advance);
       }
 
-      await ctx.reply(`Use the menu below anytime:`, {
+      await ctx.reply(`Need help? ${supportPhone}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
       this.orderSessions.delete(chatId);

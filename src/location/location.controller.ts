@@ -13,6 +13,23 @@ export class LocationController {
     return this.locationIqService.autocomplete(query);
   }
 
+  @Get('reverse')
+  async reverse(@Query('lat') latStr: string, @Query('lon') lonStr: string) {
+    if (!latStr || !lonStr) {
+      throw new BadRequestException('lat and lon are required');
+    }
+    const lat = parseFloat(latStr);
+    const lon = parseFloat(lonStr);
+    if (isNaN(lat) || isNaN(lon)) {
+      throw new BadRequestException('lat and lon must be numbers');
+    }
+    const result = await this.locationIqService.reverseGeocode(lat, lon);
+    if (!result) {
+      return { displayName: 'Your location', lat, lon };
+    }
+    return result;
+  }
+
   @Get('delivery-fee')
   async getDeliveryFee(
     @Query('lat') latStr: string,

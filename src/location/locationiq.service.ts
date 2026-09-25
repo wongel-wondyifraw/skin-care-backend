@@ -9,6 +9,12 @@ export interface LocationSuggestion {
   lon: string;
 }
 
+export interface ReverseGeocodeResult {
+  displayName: string;
+  lat: number;
+  lon: number;
+}
+
 @Injectable()
 export class LocationIqService {
   private readonly logger = new Logger(LocationIqService.name);
@@ -47,6 +53,47 @@ export class LocationIqService {
     }
   }
 
+  async reverseGeocode(
+    lat: number,
+    lon: number,
+  ): Promise<ReverseGeocodeResult | null> {
+    if (!this.apiKey) {
+      this.logger.warn('LOCATIONIQ_API_KEY is not set');
+      return null;
+    }
+
+    try {
+      const url = `${this.baseUrl}/reverse?key=${this.apiKey}&lat=${lat}&lon=${lon}&format=json`;
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw new Error(
+          `LocationIQ reverse returned ${response.status} ${response.statusText}`,
+        );
+      }
+      const data = (await response.json()) as {
+        display_name?: string;
+        lat?: string;
+        lon?: string;
+      };
+      const displayName =
+        typeof data.display_name === 'string' && data.display_name.trim()
+          ? data.display_name.trim()
+          : 'Your location';
+      return {
+        displayName,
+        lat: Number(data.lat) || lat,
+        lon: Number(data.lon) || lon,
+      };
+    } catch (err) {
+      this.logger.error(`Reverse geocode failed: ${(err as Error).message}`);
+      return {
+        displayName: 'Your location',
+        lat,
+        lon,
+      };
+    }
+  }
+
   async getDrivingDistance(
     originLat: number,
     originLon: number,
@@ -59,7 +106,6 @@ export class LocationIqService {
     }
 
     try {
-      // Directions API format: {lon},{lat};{lon},{lat}
       const url = `${this.baseUrl}/directions/driving/${originLon},${originLat};${destLon},${destLat}?key=${this.apiKey}&overview=false`;
       const response = await fetch(url);
 
@@ -73,7 +119,6 @@ export class LocationIqService {
 
       if (data.routes && data.routes.length > 0) {
         const route = data.routes[0];
-        // distance is in meters, duration in seconds
         return {
           distanceKm: route.distance / 1000,
           durationMinutes: Math.round(route.duration / 60),
@@ -95,6 +140,7 @@ export class LocationIqService {
     fee: number;
     durationMinutes: number;
     withinRadius: boolean;
+    bandLabel: string | null;
   }> {
     const origin = await this.settingsService.getDeliveryOrigin();
     const rate = await this.settingsService.getDeliveryRate();
@@ -106,25 +152,26 @@ export class LocationIqService {
       destLon,
     );
 
-    // Fallback if distance is 0 (e.g. api error)
     if (distanceKm === 0) {
+      const first = rate.bands[0];
       return {
         distanceKm: 0,
-        fee: 350,
+        fee: first?.fee ?? 350,
         durationMinutes: 0,
         withinRadius: true,
+        bandLabel: first ? `${first.fromKm}–${first.toKm} km` : null,
       };
     }
 
-    const calculatedFee = distanceKm * rate.ratePerKm;
-    const finalFee = Math.max(calculatedFee, rate.minFee);
-    const withinRadius = distanceKm <= rate.maxRadiusKm;
+    const rounded = parseFloat(distanceKm.toFixed(2));
+    const priced = this.settingsService.feeForDistanceKm(rounded, rate);
 
     return {
-      distanceKm: parseFloat(distanceKm.toFixed(2)),
-      fee: Math.ceil(finalFee), // Round up to nearest integer
+      distanceKm: rounded,
+      fee: priced.fee,
       durationMinutes,
-      withinRadius,
+      withinRadius: priced.withinRadius,
+      bandLabel: priced.bandLabel,
     };
   }
 }

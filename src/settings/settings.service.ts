@@ -7,30 +7,16 @@ import {
   IsArray,
   IsNumber,
   ValidateNested,
-  IsNotEmpty,
+  IsOptional,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 
 export const SHOP_TRENDING_KEY = 'shop_trending_product_ids';
-export const DELIVERY_ZONES_KEY = 'delivery_zones';
 export const DELIVERY_ORIGIN_KEY = 'delivery_origin';
 export const DELIVERY_RATE_KEY = 'delivery_rate';
 export const SUPPORT_PHONE_KEY = 'support_phone';
 export const PAYMENT_INFO_KEY = 'payment_info';
 export const MAX_TRENDING_PRODUCTS = 5;
-
-export class DeliveryZone {
-  @IsString()
-  @IsNotEmpty()
-  name: string;
-
-  @IsNumber()
-  fee: number;
-
-  @IsArray()
-  @IsString({ each: true })
-  keywords: string[];
-}
 
 export class DeliveryOrigin {
   @IsNumber()
@@ -43,12 +29,22 @@ export class DeliveryOrigin {
   displayAddress: string;
 }
 
-export class DeliveryRate {
+export class DeliveryBand {
   @IsNumber()
-  ratePerKm: number;
+  fromKm: number;
 
   @IsNumber()
-  minFee: number;
+  toKm: number;
+
+  @IsNumber()
+  fee: number;
+}
+
+export class DeliveryRate {
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DeliveryBand)
+  bands: DeliveryBand[];
 
   @IsNumber()
   maxRadiusKm: number;
@@ -82,6 +78,15 @@ export class PaymentInfo {
   @Type(() => TelebirrInfo)
   telebirr: TelebirrInfo;
 }
+
+const DEFAULT_DELIVERY_RATE: DeliveryRate = {
+  bands: [
+    { fromKm: 0, toKm: 5, fee: 100 },
+    { fromKm: 5, toKm: 15, fee: 200 },
+    { fromKm: 15, toKm: 30, fee: 350 },
+  ],
+  maxRadiusKm: 30,
+};
 
 @Injectable()
 export class SettingsService {
@@ -135,46 +140,6 @@ export class SettingsService {
     return unique;
   }
 
-  async getDeliveryZones(): Promise<DeliveryZone[]> {
-    const raw = await this.getValue(DELIVERY_ZONES_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-
-  async setDeliveryZones(zones: DeliveryZone[]): Promise<DeliveryZone[]> {
-    if (!Array.isArray(zones)) {
-      throw new BadRequestException('delivery zones must be an array');
-    }
-    await this.setValue(DELIVERY_ZONES_KEY, JSON.stringify(zones));
-    return zones;
-  }
-
-  async calculateDeliveryFee(
-    address?: string | null,
-  ): Promise<{ zone: string; fee: number }> {
-    if (!address || !address.trim()) {
-      return { zone: 'Standard Delivery', fee: 350 };
-    }
-    const zones = await this.getDeliveryZones();
-    const lower = address.toLowerCase();
-
-    for (const zone of zones) {
-      if (
-        Array.isArray(zone.keywords) &&
-        zone.keywords.some((kw) => lower.includes(kw.toLowerCase().trim()))
-      ) {
-        return { zone: zone.name, fee: Number(zone.fee) || 350 };
-      }
-    }
-
-    return { zone: 'Other Locations', fee: 350 };
-  }
-
   async getDeliveryOrigin(): Promise<DeliveryOrigin> {
     const raw = await this.getValue(DELIVERY_ORIGIN_KEY);
     if (raw) {
@@ -200,21 +165,85 @@ export class SettingsService {
     const raw = await this.getValue(DELIVERY_RATE_KEY);
     if (raw) {
       try {
-        return JSON.parse(raw);
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        return this.normalizeDeliveryRate(parsed);
       } catch {
         // fallback
       }
     }
+    return { ...DEFAULT_DELIVERY_RATE, bands: [...DEFAULT_DELIVERY_RATE.bands] };
+  }
+
+  /** Migrate legacy ratePerKm/minFee shape → bands */
+  normalizeDeliveryRate(parsed: Record<string, unknown>): DeliveryRate {
+    if (Array.isArray(parsed.bands) && parsed.bands.length > 0) {
+      const bands = (parsed.bands as DeliveryBand[])
+        .map((b) => ({
+          fromKm: Number(b.fromKm) || 0,
+          toKm: Number(b.toKm) || 0,
+          fee: Number(b.fee) || 0,
+        }))
+        .filter((b) => b.toKm > b.fromKm && b.fee >= 0)
+        .sort((a, b) => a.fromKm - b.fromKm);
+      const maxRadiusKm =
+        Number(parsed.maxRadiusKm) ||
+        Math.max(...bands.map((b) => b.toKm), 30);
+      return { bands, maxRadiusKm };
+    }
+
+    // Legacy: { ratePerKm, minFee, maxRadiusKm }
+    const maxRadiusKm = Number(parsed.maxRadiusKm) || 30;
+    const minFee = Number(parsed.minFee) || 50;
     return {
-      ratePerKm: 25,
-      minFee: 50,
-      maxRadiusKm: 30,
+      bands: [{ fromKm: 0, toKm: maxRadiusKm, fee: minFee }],
+      maxRadiusKm,
     };
   }
 
   async setDeliveryRate(rate: DeliveryRate): Promise<DeliveryRate> {
-    await this.setValue(DELIVERY_RATE_KEY, JSON.stringify(rate));
-    return rate;
+    const normalized = this.normalizeDeliveryRate(
+      rate as unknown as Record<string, unknown>,
+    );
+    if (!normalized.bands.length) {
+      throw new BadRequestException('At least one KM band is required');
+    }
+    await this.setValue(DELIVERY_RATE_KEY, JSON.stringify(normalized));
+    return normalized;
+  }
+
+  /**
+   * Pick flat fee for a driving distance using configured KM bands.
+   */
+  feeForDistanceKm(
+    distanceKm: number,
+    rate: DeliveryRate,
+  ): { fee: number; withinRadius: boolean; bandLabel: string | null } {
+    if (!Number.isFinite(distanceKm) || distanceKm < 0) {
+      return { fee: 0, withinRadius: false, bandLabel: null };
+    }
+    if (distanceKm > rate.maxRadiusKm) {
+      return { fee: 0, withinRadius: false, bandLabel: null };
+    }
+    const band = rate.bands.find(
+      (b) => distanceKm >= b.fromKm && distanceKm <= b.toKm,
+    );
+    if (!band) {
+      // Gap between bands: use next band that covers above fromKm
+      const next = rate.bands.find((b) => distanceKm <= b.toKm);
+      if (!next) {
+        return { fee: 0, withinRadius: false, bandLabel: null };
+      }
+      return {
+        fee: Math.ceil(next.fee),
+        withinRadius: true,
+        bandLabel: `${next.fromKm}–${next.toKm} km`,
+      };
+    }
+    return {
+      fee: Math.ceil(band.fee),
+      withinRadius: true,
+      bandLabel: `${band.fromKm}–${band.toKm} km`,
+    };
   }
 
   async getPaymentInfo(): Promise<PaymentInfo> {
@@ -258,23 +287,20 @@ export class SettingsService {
   async getShopSettings() {
     return {
       trendingProductIds: await this.getTrendingProductIds(),
-      deliveryZones: await this.getDeliveryZones(),
       paymentInfo: await this.getPaymentInfo(),
       supportPhone: await this.getSupportPhone(),
+      deliveryOrigin: await this.getDeliveryOrigin(),
+      deliveryRate: await this.getDeliveryRate(),
     };
   }
 
   async updateShopSettings(body: {
     trendingProductIds?: string[];
-    deliveryZones?: DeliveryZone[];
     paymentInfo?: PaymentInfo;
     supportPhone?: string;
   }) {
     if (body.trendingProductIds !== undefined) {
       await this.setTrendingProductIds(body.trendingProductIds);
-    }
-    if (body.deliveryZones !== undefined) {
-      await this.setDeliveryZones(body.deliveryZones);
     }
     if (body.paymentInfo !== undefined) {
       await this.setPaymentInfo(body.paymentInfo);

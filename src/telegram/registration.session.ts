@@ -142,6 +142,9 @@ export interface OrderSession {
   pickupLocationId?: string;
   pickupLocationName?: string;
   deliveryAddress?: string | null;
+  deliveryLat?: number | null;
+  deliveryLon?: number | null;
+  deliveryDistanceKm?: number | null;
   deliveryFee?: number;
   advancePaymentAmount?: number;
   totalCost?: number;

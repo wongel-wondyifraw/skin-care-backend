@@ -368,9 +368,47 @@ export class VerifyEtService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
+  private authHeaders() {
+    return { 'x-api-key': this.apiKey };
+  }
+
+  /** Live status + result payload for one verification request */
+  async getVerificationDetail(requestId: string): Promise<Record<string, unknown> | null> {
+    if (!this.isEnabled() || !requestId) return null;
+    try {
+      const res = await fetch(`${this.baseUrl}/api/verify/${requestId}`, {
+        headers: this.authHeaders(),
+      });
+      if (!res.ok) {
+        this.logger.warn(
+          `Verify.ET detail ${requestId} → HTTP ${res.status}`,
+        );
+        return null;
+      }
+      return (await res.json()) as Record<string, unknown>;
+    } catch (err) {
+      this.logger.error(`Verify.ET detail fetch failed: ${err}`);
+      return null;
+    }
+  }
+
+  async getHistory(limit = 40, offset = 0) {
+    if (!this.isEnabled()) return null;
+    try {
+      const res = await fetch(
+        `${this.baseUrl}/api/verify/history?limit=${limit}&offset=${offset}`,
+        { headers: this.authHeaders() },
+      );
+      if (!res.ok) return null;
+      return (await res.json()) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }
+
   async getDashboardData() {
     if (!this.isEnabled()) return null;
-    const headers = { 'x-api-key': this.apiKey };
+    const headers = this.authHeaders();
 
     const [uptime, metrics, overview, balance, history] = await Promise.all([
       fetch(`${this.baseUrl}/api/uptime`, { headers })
@@ -385,9 +423,7 @@ export class VerifyEtService {
       fetch(`${this.baseUrl}/api/credits/balance`, { headers })
         .then((r) => r.json())
         .catch(() => null),
-      fetch(`${this.baseUrl}/api/verify/history?limit=10`, { headers })
-        .then((r) => r.json())
-        .catch(() => null),
+      this.getHistory(40, 0),
     ]);
 
     return { uptime, metrics, overview, balance, history };

@@ -22,7 +22,7 @@ export class SeedService implements OnApplicationBootstrap {
     await this.seedAdmin();
     await this.seedSkinTypes();
     await this.seedPickupLocations();
-    await this.seedDeliveryZones();
+    await this.seedDeliveryRate();
     await this.seedPaymentInfo();
     await this.seedSupportPhone();
   }
@@ -88,41 +88,31 @@ export class SeedService implements OnApplicationBootstrap {
     }
   }
 
-  private async seedDeliveryZones(): Promise<void> {
+  private async seedDeliveryRate(): Promise<void> {
     try {
-      const zones = await this.settingsService.getDeliveryZones();
-      if (!zones || zones.length === 0) {
-        await this.settingsService.setDeliveryZones([
-          {
-            name: 'Bole / CMC',
-            fee: 220,
-            keywords: ['bole', 'cmc', 'gerji', 'summit'],
-          },
-          {
-            name: 'Kazanchis / Piassa',
-            fee: 250,
-            keywords: ['kazanchis', 'piassa', 'arat kilo', 'sidist kilo'],
-          },
-          {
-            name: 'Megenagna / Hayahulet',
-            fee: 300,
-            keywords: ['megenagna', 'hayahulet', 'kotebe'],
-          },
-          {
-            name: 'Jemo / Ayat',
-            fee: 400,
-            keywords: ['jemo', 'ayat', 'tuludimtu'],
-          },
-          {
-            name: 'Akaki / Kaliti',
-            fee: 500,
-            keywords: ['akaki', 'kaliti', 'dukem'],
-          },
-        ]);
-        this.logger.log('Seeded initial delivery zones');
+      const existing = await this.settingsService.getValue('delivery_rate');
+      if (!existing) {
+        await this.settingsService.setDeliveryRate({
+          bands: [
+            { fromKm: 0, toKm: 5, fee: 100 },
+            { fromKm: 5, toKm: 15, fee: 200 },
+            { fromKm: 15, toKm: 30, fee: 350 },
+          ],
+          maxRadiusKm: 30,
+        });
+        this.logger.log('Seeded delivery KM bands');
+      } else {
+        // Ensure legacy shapes are rewritten to bands on boot
+        const rate = await this.settingsService.getDeliveryRate();
+        await this.settingsService.setDeliveryRate(rate);
+      }
+      // Drop unused keyword zones key if present
+      const zones = await this.settingsService.getValue('delivery_zones');
+      if (zones) {
+        await this.settingsService.setValue('delivery_zones', '[]');
       }
     } catch (err) {
-      this.logger.error('Failed to seed delivery zones', err);
+      this.logger.error('Failed to seed delivery rate', err);
     }
   }
 
