@@ -1629,28 +1629,12 @@ export class TelegramUpdate {
         session.pickupLocationName = found.name;
         this.orderSessions.set(chatId, session);
 
-        const lat = found.lat != null ? Number(found.lat) : null;
-        const lon = found.lon != null ? Number(found.lon) : null;
-        if (lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon)) {
-          try {
-            await ctx.replyWithLocation(lat, lon);
-            const desc = found.description?.trim();
-            await ctx.reply(
-              `*${found.name}*\n${found.address}` +
-                (desc ? `\n\n${desc}` : ''),
-              { parse_mode: 'Markdown' },
-            );
-          } catch {
-            // ignore map send failures
-          }
-        } else {
-          const desc = found.description?.trim();
-          await ctx.reply(
-            `*${found.name}*\n${found.address}` +
-              (desc ? `\n\n${desc}` : ''),
-            { parse_mode: 'Markdown' },
-          );
-        }
+        const desc = found.description?.trim();
+        await ctx.reply(
+          `*${found.name}*\n${found.address}` +
+            (desc ? `\n\n${desc}` : ''),
+          { parse_mode: 'Markdown' },
+        );
 
         await this.sendPaymentPrompt(ctx, chatId, session);
         return;
