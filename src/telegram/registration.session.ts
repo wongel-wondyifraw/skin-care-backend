@@ -127,7 +127,9 @@ export type OrderSessionStep =
   | 'awaiting_delivery_address'
   | 'awaiting_pickup_selection'
   | 'awaiting_payment_method'
-  | 'awaiting_payment_evidence';
+  | 'awaiting_payment_evidence'
+  | 'awaiting_balance_payment_method'
+  | 'awaiting_balance_payment_evidence';
 
 export interface OrderSession {
   step: OrderSessionStep;
@@ -151,6 +153,9 @@ export interface OrderSession {
   paymentMethod?: string;
   /** Receipt photo URL waiting for user confirm / remove */
   pendingPaymentPhotoUrl?: string;
+  /** When paying remaining balance on an existing order */
+  existingOrderId?: string;
+  remainingAmount?: number;
 }
 
 export class OrderSessionStore {

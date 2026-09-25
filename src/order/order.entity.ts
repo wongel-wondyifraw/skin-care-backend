@@ -19,6 +19,9 @@ export type OrderStatus =
   | 'delivered'
   | 'cancelled';
 
+/** Money collected vs order total (fulfilment status stays separate). */
+export type PaymentStage = 'unpaid' | 'partial' | 'full';
+
 export type FulfilmentType = 'delivery' | 'pickup';
 
 @Entity('orders')
@@ -87,11 +90,19 @@ export class Order {
   @Column({ type: 'date', nullable: true })
   expectedDeliveryDate: Date | null;
 
-  /** 50% payment amount required */
+  /** 50% payment amount required (advance) */
   @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
   advancePaymentAmount: number;
 
-  /** URL to uploaded payment screenshot or reference text */
+  /** Verified money collected so far (advance and/or balance). */
+  @Column({ type: 'decimal', precision: 10, scale: 2, default: 0 })
+  amountPaid: number;
+
+  /** unpaid → partial (half verified) → full */
+  @Column({ type: 'varchar', length: 20, default: 'unpaid' })
+  paymentStage: PaymentStage;
+
+  /** URL to uploaded payment screenshot or reference text (advance) */
   @Column({ type: 'text', nullable: true })
   paymentEvidence: string | null;
 
@@ -103,9 +114,23 @@ export class Order {
   @Column({ type: 'timestamptz', nullable: true })
   paymentSubmittedAt: Date | null;
 
-  /** When admin verified the payment */
+  /** When advance (or full-at-checkout) payment was verified */
   @Column({ type: 'timestamptz', nullable: true })
   paymentVerifiedAt: Date | null;
+
+  /** Remaining-balance payment evidence (TX or screenshot URL) */
+  @Column({ type: 'text', nullable: true })
+  balancePaymentEvidence: string | null;
+
+  /** 'bank' | 'telebirr' for remaining payment */
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  balancePaymentMethod: string | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  balancePaymentSubmittedAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
+  balanceVerifiedAt: Date | null;
 
   /** Verify.ET automated verification request ID */
   @Column({ type: 'varchar', length: 100, nullable: true })
@@ -118,6 +143,12 @@ export class Order {
   /** Full Verify.ET response for audit */
   @Column({ type: 'jsonb', nullable: true })
   verifyEtRawResponse: Record<string, unknown> | null;
+
+  @Column({ type: 'varchar', length: 100, nullable: true })
+  balanceVerifyEtRequestId: string | null;
+
+  @Column({ type: 'varchar', length: 30, nullable: true })
+  balanceVerifyEtStatus: string | null;
 
   @Index()
   @CreateDateColumn()

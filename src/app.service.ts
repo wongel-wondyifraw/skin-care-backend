@@ -33,14 +33,91 @@ export class AppService {
       skinTypes,
       customers,
       orders,
-      salesRaw,
+      halfVerifiedRaw,
+      fullVerifiedRaw,
+      halfCollectedRaw,
+      revenueCollectedRaw,
+      outstandingRaw,
+      deliveredSalesRaw,
       recentOrders,
     ] = await Promise.all([
       this.productRepository.count(),
       this.categoryRepository.count(),
       this.skinTypeRepository.count(),
       this.customerRepository.count(),
-      this.orderRepository.count(),
+      this.orderRepository
+        .createQueryBuilder('order')
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .getCount(),
+      // Half payment verified (partial) — include legacy confirmed without stage
+      this.orderRepository
+        .createQueryBuilder('order')
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .andWhere(
+          `(order.paymentStage = 'partial' OR (
+            (order.paymentStage IS NULL OR order.paymentStage = 'unpaid')
+            AND order.paymentVerifiedAt IS NOT NULL
+            AND order.status IN ('confirmed', 'delivered')
+          ))`,
+        )
+        .getCount(),
+      this.orderRepository
+        .createQueryBuilder('order')
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .andWhere(`order.paymentStage = 'full'`)
+        .getCount(),
+      // Sum of verified advances (amountPaid for partial, or advance for legacy)
+      this.orderRepository
+        .createQueryBuilder('order')
+        .select(
+          `COALESCE(SUM(
+            CASE
+              WHEN order.paymentStage = 'partial' THEN COALESCE(order.amountPaid, order.advancePaymentAmount, 0)
+              WHEN order.paymentStage = 'full' THEN COALESCE(order.advancePaymentAmount, order.amountPaid * 0.5, 0)
+              WHEN order.paymentVerifiedAt IS NOT NULL THEN COALESCE(order.advancePaymentAmount, 0)
+              ELSE 0
+            END
+          ), 0)`,
+          'total',
+        )
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .getRawOne<{ total: string }>(),
+      this.orderRepository
+        .createQueryBuilder('order')
+        .select(
+          `COALESCE(SUM(
+            CASE
+              WHEN order.paymentStage = 'full' THEN COALESCE(order.amountPaid, order.cost * order.quantity + COALESCE(order.deliveryFee, 0), 0)
+              WHEN order.paymentStage = 'partial' THEN COALESCE(order.amountPaid, order.advancePaymentAmount, 0)
+              WHEN order.paymentVerifiedAt IS NOT NULL THEN COALESCE(order.advancePaymentAmount, 0)
+              ELSE 0
+            END
+          ), 0)`,
+          'total',
+        )
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .getRawOne<{ total: string }>(),
+      this.orderRepository
+        .createQueryBuilder('order')
+        .select(
+          `COALESCE(SUM(
+            GREATEST(
+              (order.cost * order.quantity + COALESCE(order.deliveryFee, 0))
+              - COALESCE(NULLIF(order.amountPaid, 0), order.advancePaymentAmount, 0),
+              0
+            )
+          ), 0)`,
+          'total',
+        )
+        .where('order.status != :cancelled', { cancelled: 'cancelled' })
+        .andWhere(
+          `(order.paymentStage = 'partial' OR (
+            (order.paymentStage IS NULL OR order.paymentStage = 'unpaid')
+            AND order.paymentVerifiedAt IS NOT NULL
+            AND order.status IN ('confirmed', 'delivered')
+          ))`,
+        )
+        .getRawOne<{ total: string }>(),
       this.orderRepository
         .createQueryBuilder('order')
         .select('COALESCE(SUM(order.cost * order.quantity), 0)', 'total')
@@ -59,7 +136,14 @@ export class AppService {
       skinTypes,
       customers,
       orders,
-      sales: Number(salesRaw?.total ?? 0),
+      /** @deprecated use revenueCollected — kept for older clients */
+      sales: Number(deliveredSalesRaw?.total ?? 0),
+      halfPaymentVerifiedOrders: halfVerifiedRaw,
+      fullPaymentVerifiedOrders: fullVerifiedRaw,
+      halfPaymentCollected: Number(halfCollectedRaw?.total ?? 0),
+      revenueCollected: Number(revenueCollectedRaw?.total ?? 0),
+      outstandingRemaining: Number(outstandingRaw?.total ?? 0),
+      deliveredSales: Number(deliveredSalesRaw?.total ?? 0),
       recentOrders,
     };
   }

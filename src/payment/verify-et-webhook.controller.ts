@@ -44,51 +44,93 @@ export class VerifyEtWebhookController {
 
     this.logger.log(`Verify.ET webhook received: requestId=${requestId}`);
 
+    // Advance / checkout verification
     const orders = await this.orderRepository.find({
       where: { verifyEtRequestId: requestId },
       relations: { customer: true, product: true },
     });
 
-    if (!orders.length) {
-      // Expected when checkout already polled to completion before webhook
+    if (orders.length) {
+      const totalAdvance = orders.reduce(
+        (sum, o) => sum + (Number(o.advancePaymentAmount) || 0),
+        0,
+      );
+      const cartTotal = orders.reduce(
+        (sum, o) => sum + this.orderService.lineTotal(o),
+        0,
+      );
+      const result = this.verifyEtService.parseCompletedResponse(
+        payload,
+        totalAdvance,
+      );
+
+      for (const order of orders) {
+        order.verifyEtStatus = result.outcome;
+        order.verifyEtRawResponse = result.rawResponse ?? null;
+        await this.orderRepository.save(order);
+
+        if (result.outcome === 'verified') {
+          await this.orderService.applyVerifiedPaymentFromResult(
+            order.id,
+            result,
+            totalAdvance,
+            cartTotal,
+          );
+        }
+      }
+
+      if (result.outcome !== 'verified') {
+        const first = orders[0];
+        await this.notificationService.create({
+          type: 'payment_submitted',
+          title: 'Auto-verification failed (webhook)',
+          body: `${first.customer?.fullName ?? 'Customer'} · ${first.product?.name ?? 'Product'} — ${result.failureReason || result.outcome}`,
+          orderId: first.id,
+          href: '/admin/orders',
+        });
+      }
+
+      return { received: true };
+    }
+
+    // Balance (remaining) verification
+    const balanceOrders = await this.orderRepository.find({
+      where: { balanceVerifyEtRequestId: requestId },
+      relations: { customer: true, product: true },
+    });
+
+    if (!balanceOrders.length) {
       this.logger.log(
         `No pending orders for requestId=${requestId} (likely already resolved)`,
       );
       return { received: true };
     }
 
-    const totalAdvance = orders.reduce(
-      (sum, o) => sum + (Number(o.advancePaymentAmount) || 0),
-      0,
-    );
-    const result = this.verifyEtService.parseCompletedResponse(
-      payload,
-      totalAdvance,
-    );
-
-    for (const order of orders) {
-      order.verifyEtStatus = result.outcome;
-      order.verifyEtRawResponse = result.rawResponse ?? null;
-      await this.orderRepository.save(order);
-
-      if (
-        result.outcome === 'verified' &&
-        (order.status === 'payment_submitted' ||
-          order.status === 'awaiting_payment')
-      ) {
-        await this.orderService.updateStatus(order.id, 'confirmed');
+    for (const order of balanceOrders) {
+      const remaining = this.orderService.remainingDue(order);
+      const expected = remaining > 0.01 ? remaining : this.orderService.lineTotal(order);
+      const result = this.verifyEtService.parseCompletedResponse(
+        payload,
+        expected,
+      );
+      order.balanceVerifyEtStatus = result.outcome;
+      if (result.outcome === 'verified') {
+        order.paymentStage = 'full';
+        order.amountPaid = this.orderService.lineTotal(order);
+        order.balanceVerifiedAt = new Date();
+        await this.orderRepository.save(order);
+      } else {
+        await this.orderRepository.save(order);
+        if (result.outcome !== 'queued') {
+          await this.notificationService.create({
+            type: 'payment_submitted',
+            title: 'Balance verification failed (webhook)',
+            body: `${order.customer?.fullName ?? 'Customer'} · ${order.product?.name ?? 'Product'} — ${result.failureReason || result.outcome}`,
+            orderId: order.id,
+            href: '/admin/orders',
+          });
+        }
       }
-    }
-
-    if (result.outcome !== 'verified') {
-      const first = orders[0];
-      await this.notificationService.create({
-        type: 'payment_submitted',
-        title: 'Auto-verification failed (webhook)',
-        body: `${first.customer?.fullName ?? 'Customer'} · ${first.product?.name ?? 'Product'} — ${result.failureReason || result.outcome}`,
-        orderId: first.id,
-        href: '/admin/orders',
-      });
     }
 
     return { received: true };

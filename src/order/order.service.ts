@@ -8,7 +8,12 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, MoreThanOrEqual } from 'typeorm';
-import { Order, OrderStatus, FulfilmentType } from './order.entity.js';
+import {
+  Order,
+  OrderStatus,
+  FulfilmentType,
+  PaymentStage,
+} from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 import { NotificationService } from '../notification/notification.service.js';
@@ -71,6 +76,72 @@ export class OrderService {
       .leftJoinAndSelect('order.product', 'product')
       .leftJoinAndSelect('order.pickupLocation', 'pickupLocation')
       .orderBy('order.createdAt', 'DESC');
+  }
+
+  /** Line total = unit × qty + delivery fee */
+  lineTotal(order: Pick<Order, 'cost' | 'quantity' | 'deliveryFee'>): number {
+    const unit = Number(order.cost) || 0;
+    const qty = Math.max(1, order.quantity ?? 1);
+    const fee = Number(order.deliveryFee) || 0;
+    return Math.round((unit * qty + fee) * 100) / 100;
+  }
+
+  remainingDue(order: Order): number {
+    if (order.paymentStage === 'full') return 0;
+    const total = this.lineTotal(order);
+    let paid = Number(order.amountPaid) || 0;
+    if (
+      paid <= 0 &&
+      (order.paymentStage === 'partial' ||
+        order.paymentVerifiedAt ||
+        order.status === 'confirmed' ||
+        order.status === 'delivered')
+    ) {
+      paid = Number(order.advancePaymentAmount) || 0;
+    }
+    return Math.max(0, Math.round((total - paid) * 100) / 100);
+  }
+
+  /**
+   * Map Verify.ET amount to partial vs full for a single line.
+   * Missing/zero amount → treat as advance (partial).
+   */
+  resolvePaidFromAmount(
+    verifiedAmount: number | undefined | null,
+    advance: number,
+    total: number,
+  ): { paymentStage: PaymentStage; amountPaid: number } {
+    const amt = Number(verifiedAmount) || 0;
+    const adv = Math.max(0, advance);
+    const tot = Math.max(0, total);
+    if (tot > 0 && amt >= tot - 1) {
+      return { paymentStage: 'full', amountPaid: tot };
+    }
+    const paid = amt > 0 ? Math.min(Math.max(amt, adv), tot || amt) : adv;
+    return {
+      paymentStage: tot > 0 && paid >= tot - 1 ? 'full' : 'partial',
+      amountPaid: Math.round(paid * 100) / 100,
+    };
+  }
+
+  /** Legacy rows: confirmed with no stage → treat as partial. */
+  effectivePaymentStage(order: Order): PaymentStage {
+    if (order.paymentStage === 'full' || order.paymentStage === 'partial') {
+      return order.paymentStage;
+    }
+    if (
+      order.paymentVerifiedAt ||
+      order.status === 'confirmed' ||
+      order.status === 'delivered'
+    ) {
+      const rem = this.remainingDue({
+        ...order,
+        amountPaid:
+          Number(order.amountPaid) || Number(order.advancePaymentAmount) || 0,
+      } as Order);
+      return rem <= 0.01 ? 'full' : 'partial';
+    }
+    return 'unpaid';
   }
 
   async findAll(): Promise<Order[]> {
@@ -225,15 +296,33 @@ export class OrderService {
           ? 'payment_submitted'
           : 'awaiting_payment';
 
+    const verifiedAmount =
+      verifyResult?.outcome === 'verified' ? verifyResult.amount : undefined;
+    const cartPaid =
+      verifyResult?.outcome === 'verified'
+        ? this.resolvePaidFromAmount(verifiedAmount, totalAdvance, grandTotal)
+        : null;
+
     const created: Order[] = [];
     for (let i = 0; i < productInfos.length; i++) {
       const { product, quantity, unitPrice } = productInfos[i];
       const lineCost = unitPrice * quantity;
       const lineDeliveryFee = i === 0 ? deliveryFee : 0;
+      const lineTotal = Math.round((lineCost + lineDeliveryFee) * 100) / 100;
       const lineAdvance =
         subtotal > 0
           ? Math.round((lineCost + lineDeliveryFee) * 0.5 * 100) / 100
           : 0;
+
+      let paymentStage: PaymentStage = 'unpaid';
+      let amountPaid = 0;
+      if (cartPaid?.paymentStage === 'full') {
+        paymentStage = 'full';
+        amountPaid = lineTotal;
+      } else if (cartPaid?.paymentStage === 'partial') {
+        paymentStage = 'partial';
+        amountPaid = lineAdvance;
+      }
 
       const order = await this.create({
         customerId,
@@ -250,11 +339,17 @@ export class OrderService {
         deliveryFee: lineDeliveryFee,
         expectedDeliveryDate: tomorrow,
         advancePaymentAmount: lineAdvance,
+        amountPaid,
+        paymentStage,
         paymentMethod: opts.paymentMethod ?? null,
         paymentEvidence: extractedTxId ?? opts.paymentEvidence ?? null,
         paymentSubmittedAt: verifyResult ? new Date() : null,
         paymentVerifiedAt:
           verifyResult?.outcome === 'verified' ? new Date() : null,
+        balanceVerifiedAt:
+          paymentStage === 'full' && verifyResult?.outcome === 'verified'
+            ? new Date()
+            : null,
         verifyEtRequestId: verifyResult?.requestId ?? null,
         verifyEtStatus: verifyResult?.outcome ?? null,
         verifyEtRawResponse: verifyResult?.rawResponse ?? null,
@@ -271,7 +366,7 @@ export class OrderService {
     } else if (initialStatus === 'payment_submitted') {
       void this.notifyAdminsPaymentSubmitted(created[0]);
       // Webhook + background poll will confirm (or fail) without blocking checkout
-      void this.finishQueuedVerification(created, totalAdvance);
+      void this.finishQueuedVerification(created, totalAdvance, grandTotal);
     } else {
       void this.notifyCustomerShopOrdersPlaced(
         created,
@@ -320,13 +415,21 @@ export class OrderService {
     deliveryFee?: number;
     expectedDeliveryDate?: Date | null;
     advancePaymentAmount?: number;
+    amountPaid?: number;
+    paymentStage?: PaymentStage;
     paymentMethod?: string | null;
     paymentEvidence?: string | null;
     paymentSubmittedAt?: Date | null;
     paymentVerifiedAt?: Date | null;
+    balancePaymentEvidence?: string | null;
+    balancePaymentMethod?: string | null;
+    balancePaymentSubmittedAt?: Date | null;
+    balanceVerifiedAt?: Date | null;
     verifyEtRequestId?: string | null;
     verifyEtStatus?: string | null;
     verifyEtRawResponse?: Record<string, unknown> | null;
+    balanceVerifyEtRequestId?: string | null;
+    balanceVerifyEtStatus?: string | null;
   }): Promise<Order> {
     const quantity = Math.floor(Number(data.quantity));
     if (!Number.isFinite(quantity) || quantity < 1) {
@@ -364,13 +467,21 @@ export class OrderService {
         deliveryFee: data.deliveryFee ?? 0,
         expectedDeliveryDate: data.expectedDeliveryDate ?? null,
         advancePaymentAmount: data.advancePaymentAmount ?? 0,
+        amountPaid: data.amountPaid ?? 0,
+        paymentStage: data.paymentStage ?? 'unpaid',
         paymentMethod: data.paymentMethod ?? null,
         paymentEvidence: data.paymentEvidence ?? null,
         paymentSubmittedAt: data.paymentSubmittedAt ?? null,
         paymentVerifiedAt: data.paymentVerifiedAt ?? null,
+        balancePaymentEvidence: data.balancePaymentEvidence ?? null,
+        balancePaymentMethod: data.balancePaymentMethod ?? null,
+        balancePaymentSubmittedAt: data.balancePaymentSubmittedAt ?? null,
+        balanceVerifiedAt: data.balanceVerifiedAt ?? null,
         verifyEtRequestId: data.verifyEtRequestId ?? null,
         verifyEtStatus: data.verifyEtStatus ?? null,
         verifyEtRawResponse: data.verifyEtRawResponse ?? null,
+        balanceVerifyEtRequestId: data.balanceVerifyEtRequestId ?? null,
+        balanceVerifyEtStatus: data.balanceVerifyEtStatus ?? null,
       });
       const saved = await em.save(order);
       return saved.id;
@@ -386,7 +497,7 @@ export class OrderService {
     return this.updateStatus(id, 'cancelled', { cancelledBy: 'customer' });
   }
 
-  /** Customer submits payment evidence — confirms only when Verify.ET verifies */
+  /** Customer submits payment evidence — advance or remaining balance */
   async submitPaymentEvidence(
     orderId: string,
     customerId: string,
@@ -396,15 +507,38 @@ export class OrderService {
     },
   ): Promise<Order> {
     const order = await this.findOneForCustomer(orderId, customerId);
+    const stage = this.effectivePaymentStage(order);
+    const remaining = this.remainingDue({
+      ...order,
+      amountPaid:
+        Number(order.amountPaid) ||
+        (stage === 'partial' || stage === 'full'
+          ? Number(order.advancePaymentAmount) || 0
+          : 0),
+      paymentStage: stage,
+    } as Order);
+
+    const isBalancePay =
+      (order.status === 'confirmed' || order.status === 'delivered') &&
+      stage === 'partial' &&
+      remaining > 0.01;
+
+    if (isBalancePay) {
+      return this.submitBalancePayment(order, evidence, remaining);
+    }
+
     if (order.status !== 'awaiting_payment' && order.status !== 'pending') {
       throw new BadRequestException(
         `Order is not awaiting payment (current status: ${order.status})`,
       );
     }
+
+    const advance = Number(order.advancePaymentAmount) || 0;
+    const total = this.lineTotal(order);
     const v = await this.verifyEvidence(
       evidence.paymentMethod,
       evidence.paymentEvidence,
-      Number(order.advancePaymentAmount) || 0,
+      advance,
       order.id,
     );
 
@@ -419,8 +553,14 @@ export class OrderService {
       (v.result.rawResponse as Record<string, unknown>) ?? null;
 
     if (v.result.outcome === 'verified') {
+      const paid = this.resolvePaidFromAmount(v.result.amount, advance, total);
       order.status = 'confirmed';
       order.paymentVerifiedAt = new Date();
+      order.paymentStage = paid.paymentStage;
+      order.amountPaid = paid.amountPaid;
+      if (paid.paymentStage === 'full') {
+        order.balanceVerifiedAt = new Date();
+      }
     } else {
       order.status = 'payment_submitted';
     }
@@ -436,16 +576,117 @@ export class OrderService {
       void this.notifyAdminsPaymentSubmitted(updated);
       void this.finishQueuedVerification(
         [updated],
-        Number(updated.advancePaymentAmount) || 0,
+        advance,
+        total,
       );
     }
 
     return updated;
   }
 
-  /** Admin verifies payment -> confirmed */
+  private async submitBalancePayment(
+    order: Order,
+    evidence: {
+      paymentMethod: 'bank' | 'telebirr';
+      paymentEvidence: string;
+    },
+    remaining: number,
+  ): Promise<Order> {
+    const total = this.lineTotal(order);
+    const v = await this.verifyEvidence(
+      evidence.paymentMethod,
+      evidence.paymentEvidence,
+      remaining,
+      order.id,
+    );
+    this.assertPaymentAcceptable(v.result);
+
+    order.balancePaymentMethod = evidence.paymentMethod;
+    order.balancePaymentEvidence = v.extractedTxId;
+    order.balancePaymentSubmittedAt = new Date();
+    order.balanceVerifyEtRequestId = v.result.requestId ?? null;
+    order.balanceVerifyEtStatus = v.result.outcome;
+
+    if (v.result.outcome === 'verified') {
+      order.paymentStage = 'full';
+      order.amountPaid = total;
+      order.balanceVerifiedAt = new Date();
+      await this.orderRepository.save(order);
+      const updated = await this.findOne(order.id);
+      void this.notifyCustomerBalanceVerified(updated);
+      void this.notifyAdminsBalanceVerified(updated);
+      return updated;
+    }
+
+    await this.orderRepository.save(order);
+    void this.finishQueuedBalanceVerification(order, remaining, total);
+    return this.findOne(order.id);
+  }
+
+  /** Admin verifies advance payment → confirmed + partial (or full if known) */
   async verifyPayment(orderId: string): Promise<Order> {
+    const order = await this.findOne(orderId);
+    if (order.status !== 'payment_submitted' && order.status !== 'awaiting_payment') {
+      throw new BadRequestException(
+        `Order is ${order.status}; only submitted payments can be verified`,
+      );
+    }
+    const advance = Number(order.advancePaymentAmount) || 0;
+    const total = this.lineTotal(order);
+    const rawAmt = Number(
+      (order.verifyEtRawResponse as { amount?: number } | null)?.amount,
+    );
+    // Prefer amount from last Verify.ET payload if present
+    let verifiedAmount: number | undefined;
+    const data = order.verifyEtRawResponse;
+    if (data && typeof data === 'object') {
+      const nested = (data as { data?: unknown }).data;
+      const row = Array.isArray(nested)
+        ? (nested[0] as Record<string, unknown> | undefined)
+        : (nested as Record<string, unknown> | undefined);
+      const fromNested = Number(row?.amount);
+      const fromTop = Number((data as { amount?: number }).amount);
+      if (fromNested > 0) verifiedAmount = fromNested;
+      else if (fromTop > 0) verifiedAmount = fromTop;
+      else if (rawAmt > 0) verifiedAmount = rawAmt;
+    }
+    const paid = this.resolvePaidFromAmount(verifiedAmount, advance, total);
+    order.paymentStage = paid.paymentStage;
+    order.amountPaid = paid.amountPaid;
+    if (paid.paymentStage === 'full') {
+      order.balanceVerifiedAt = new Date();
+    }
+    await this.orderRepository.save(order);
     return this.updateStatus(orderId, 'confirmed');
+  }
+
+  /** Admin marks remaining balance as collected (half → fully paid). */
+  async markFullyPaid(orderId: string): Promise<Order> {
+    const order = await this.findOne(orderId);
+    const stage = this.effectivePaymentStage(order);
+    if (stage === 'full') {
+      return order;
+    }
+    if (stage !== 'partial' && order.status !== 'confirmed' && order.status !== 'delivered') {
+      throw new BadRequestException(
+        'Only half-payment verified orders can be marked fully paid',
+      );
+    }
+    const total = this.lineTotal(order);
+    order.paymentStage = 'full';
+    order.amountPaid = total;
+    order.balanceVerifiedAt = new Date();
+    if (!order.paymentVerifiedAt) {
+      order.paymentVerifiedAt = new Date();
+    }
+    if (order.status === 'awaiting_payment' || order.status === 'payment_submitted' || order.status === 'pending') {
+      order.status = 'confirmed';
+    }
+    await this.orderRepository.save(order);
+    const updated = await this.findOne(orderId);
+    void this.notifyCustomerBalanceVerified(updated);
+    void this.notifyAdminsBalanceVerified(updated);
+    return updated;
   }
 
   /** Admin rejects payment -> reverts to awaiting_payment */
@@ -454,6 +695,10 @@ export class OrderService {
     order.status = 'awaiting_payment';
     order.paymentEvidence = null;
     order.paymentSubmittedAt = null;
+    order.paymentStage = 'unpaid';
+    order.amountPaid = 0;
+    order.verifyEtStatus = null;
+    order.verifyEtRequestId = null;
     await this.orderRepository.save(order);
     return this.findOne(orderId);
   }
@@ -473,10 +718,12 @@ export class OrderService {
       );
     }
 
+    const advance = Number(order.advancePaymentAmount) || 0;
+    const total = this.lineTotal(order);
     const v = await this.verifyEvidence(
       order.paymentMethod as 'bank' | 'telebirr',
       order.paymentEvidence,
-      Number(order.advancePaymentAmount) || 0,
+      advance,
       order.id,
     );
     const result = v.result;
@@ -489,6 +736,13 @@ export class OrderService {
     await this.orderRepository.save(order);
 
     if (result.outcome === 'verified') {
+      const paid = this.resolvePaidFromAmount(result.amount, advance, total);
+      order.paymentStage = paid.paymentStage;
+      order.amountPaid = paid.amountPaid;
+      if (paid.paymentStage === 'full') {
+        order.balanceVerifiedAt = new Date();
+      }
+      await this.orderRepository.save(order);
       await this.updateStatus(order.id, 'confirmed');
     } else {
       const customer = order.customer?.fullName ?? 'Customer';
@@ -576,9 +830,10 @@ export class OrderService {
     const qb = this.orderRepository
       .createQueryBuilder('order')
       .where('order.status != :cancelled', { cancelled: 'cancelled' })
-      .andWhere('LOWER(TRIM(order.paymentEvidence)) = LOWER(:tx)', {
-        tx: normalized,
-      });
+      .andWhere(
+        '(LOWER(TRIM(order.paymentEvidence)) = LOWER(:tx) OR LOWER(TRIM(order.balancePaymentEvidence)) = LOWER(:tx))',
+        { tx: normalized },
+      );
 
     if (excludeOrderId) {
       qb.andWhere('order.id != :excludeId', { excludeId: excludeOrderId });
@@ -621,13 +876,15 @@ export class OrderService {
   scheduleFinishQueuedVerification(
     orders: Order[],
     expectedAmount: number,
+    orderTotal?: number,
   ): void {
-    void this.finishQueuedVerification(orders, expectedAmount);
+    void this.finishQueuedVerification(orders, expectedAmount, orderTotal);
   }
 
   private async finishQueuedVerification(
     orders: Order[],
     expectedAmount: number,
+    orderTotal?: number,
   ): Promise<void> {
     const requestId = orders[0]?.verifyEtRequestId;
     if (!requestId) return;
@@ -637,6 +894,10 @@ export class OrderService {
         requestId,
         expectedAmount,
       );
+
+      const cartTotal =
+        orderTotal ??
+        orders.reduce((sum, o) => sum + this.lineTotal(o), 0);
 
       for (const stub of orders) {
         const order = await this.findOne(stub.id);
@@ -654,6 +915,23 @@ export class OrderService {
           (order.status === 'payment_submitted' ||
             order.status === 'awaiting_payment')
         ) {
+          const advance = Number(order.advancePaymentAmount) || 0;
+          const lineTot = this.lineTotal(order);
+          // Scale share of cart payment onto this line
+          const paid = this.resolvePaidFromAmount(
+            result.amount,
+            expectedAmount,
+            cartTotal,
+          );
+          if (paid.paymentStage === 'full') {
+            order.paymentStage = 'full';
+            order.amountPaid = lineTot;
+            order.balanceVerifiedAt = new Date();
+          } else {
+            order.paymentStage = 'partial';
+            order.amountPaid = advance;
+          }
+          await this.orderRepository.save(order);
           await this.updateStatus(order.id, 'confirmed');
         } else if (result.outcome !== 'queued') {
           await this.notificationService.create({
@@ -670,6 +948,86 @@ export class OrderService {
         `Background verification for ${requestId} ended with error: ${err}`,
       );
     }
+  }
+
+  private async finishQueuedBalanceVerification(
+    orderStub: Order,
+    expectedRemaining: number,
+    lineTotal: number,
+  ): Promise<void> {
+    const requestId = orderStub.balanceVerifyEtRequestId;
+    if (!requestId) return;
+    try {
+      const result = await this.verifyEtService.pollUntilDone(
+        requestId,
+        expectedRemaining,
+      );
+      const order = await this.findOne(orderStub.id);
+      order.balanceVerifyEtStatus = result.outcome;
+      if (result.outcome === 'verified') {
+        order.paymentStage = 'full';
+        order.amountPaid = lineTotal;
+        order.balanceVerifiedAt = new Date();
+        await this.orderRepository.save(order);
+        const updated = await this.findOne(order.id);
+        void this.notifyCustomerBalanceVerified(updated);
+        void this.notifyAdminsBalanceVerified(updated);
+      } else {
+        await this.orderRepository.save(order);
+        if (result.outcome !== 'queued') {
+          await this.notificationService.create({
+            type: 'payment_submitted',
+            title: 'Balance verification failed',
+            body: `${order.customer?.fullName ?? 'Customer'} · ${order.product?.name ?? 'Product'} — ${result.failureReason || result.outcome}.`,
+            orderId: order.id,
+            href: '/admin/orders',
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Background balance verification for ${requestId} ended with error: ${err}`,
+      );
+    }
+  }
+
+  /**
+   * Apply verified payment stage from webhook / shared requestId.
+   */
+  async applyVerifiedPaymentFromResult(
+    orderId: string,
+    result: { outcome: string; amount?: number },
+    cartAdvance: number,
+    cartTotal: number,
+  ): Promise<void> {
+    const order = await this.findOne(orderId);
+    if (order.status === 'confirmed' || order.status === 'cancelled') {
+      return;
+    }
+    if (
+      result.outcome !== 'verified' ||
+      (order.status !== 'payment_submitted' &&
+        order.status !== 'awaiting_payment')
+    ) {
+      return;
+    }
+    const advance = Number(order.advancePaymentAmount) || 0;
+    const lineTot = this.lineTotal(order);
+    const paid = this.resolvePaidFromAmount(
+      result.amount,
+      cartAdvance,
+      cartTotal,
+    );
+    if (paid.paymentStage === 'full') {
+      order.paymentStage = 'full';
+      order.amountPaid = lineTot;
+      order.balanceVerifiedAt = new Date();
+    } else {
+      order.paymentStage = 'partial';
+      order.amountPaid = advance;
+    }
+    await this.orderRepository.save(order);
+    await this.updateStatus(order.id, 'confirmed');
   }
 
   private normalizeTxId(
@@ -728,6 +1086,18 @@ export class OrderService {
 
     if (status === 'confirmed' && !order.paymentVerifiedAt) {
       order.paymentVerifiedAt = new Date();
+    }
+
+    if (status === 'confirmed') {
+      const stage = order.paymentStage;
+      if (!stage || stage === 'unpaid') {
+        const advance = Number(order.advancePaymentAmount) || 0;
+        const total = this.lineTotal(order);
+        order.paymentStage = 'partial';
+        if (!(Number(order.amountPaid) > 0)) {
+          order.amountPaid = advance || total * 0.5;
+        }
+      }
     }
 
     order.status = status;
@@ -805,14 +1175,35 @@ export class OrderService {
       order.fulfilmentType === 'pickup'
         ? order.pickupLocation?.name || 'Store pickup'
         : order.deliveryAddress?.trim() || 'Delivery';
-    const advance = Number(order.advancePaymentAmount) || 0;
+    const paid = Number(order.amountPaid) || Number(order.advancePaymentAmount) || 0;
+    const total = this.lineTotal(order);
+    const remaining = Math.max(0, total - paid);
+    const isFull = order.paymentStage === 'full' || remaining <= 0.01;
 
+    const text = isFull
+      ? `✅ *Fully paid & verified*\n\n` +
+        `💵 Paid: *${paid.toFixed(2)} ETB*\n` +
+        `📅 Expected: *${expected}*\n` +
+        `📍 ${location}`
+      : `✅ *Half payment verified*\n\n` +
+        `💵 Paid: *${paid.toFixed(2)} ETB*\n` +
+        `💳 Remaining: *${remaining.toFixed(2)} ETB*\n` +
+        `📅 Expected: *${expected}*\n` +
+        `📍 ${location}\n\n` +
+        `You can pay the remaining balance from My Orders.`;
+
+    await this.telegramService.sendMessageSafe(String(telegramId), text, {
+      parse_mode: 'Markdown',
+    });
+  }
+
+  private async notifyCustomerBalanceVerified(order: Order): Promise<void> {
+    const telegramId = order.customer?.telegramId;
+    if (telegramId == null) return;
+    const total = this.lineTotal(order);
     const text =
-      `✅ *Payment confirmed*\n\n` +
-      `💵 Prepayment: *${advance.toFixed(2)} ETB*\n` +
-      `📅 Expected: *${expected}*\n` +
-      `📍 ${location}`;
-
+      `✅ *Remaining payment verified*\n\n` +
+      `${order.product?.name ?? 'Order'} is now *fully paid* (${total.toFixed(2)} ETB).`;
     await this.telegramService.sendMessageSafe(String(telegramId), text, {
       parse_mode: 'Markdown',
     });
@@ -881,10 +1272,35 @@ export class OrderService {
   private async notifyAdminsPaymentVerified(order: Order): Promise<void> {
     const customer = order.customer?.fullName ?? 'Customer';
     const product = order.product?.name ?? 'Product';
+    const stage = order.paymentStage === 'full' ? 'Fully paid' : 'Half payment verified';
+    const method =
+      order.paymentMethod === 'telebirr'
+        ? 'Telebirr'
+        : order.paymentMethod === 'bank'
+          ? 'CBE'
+          : order.paymentMethod || '—';
     await this.notificationService.create({
       type: 'payment_verified',
-      title: 'Payment verified',
-      body: `Payment verified for ${customer} · ${product}`,
+      title: stage,
+      body: `${customer} · ${product} via ${method}`,
+      orderId: order.id,
+      href: '/admin/orders',
+    });
+  }
+
+  private async notifyAdminsBalanceVerified(order: Order): Promise<void> {
+    const customer = order.customer?.fullName ?? 'Customer';
+    const product = order.product?.name ?? 'Product';
+    const method =
+      order.balancePaymentMethod === 'telebirr'
+        ? 'Telebirr'
+        : order.balancePaymentMethod === 'bank'
+          ? 'CBE'
+          : 'admin';
+    await this.notificationService.create({
+      type: 'payment_verified',
+      title: 'Fully paid',
+      body: `${customer} · ${product} remaining via ${method}`,
       orderId: order.id,
       href: '/admin/orders',
     });

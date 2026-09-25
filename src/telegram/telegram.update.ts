@@ -115,6 +115,7 @@ export class TelegramUpdate {
       keyboard: [
         [{ text: 'Profile'}, { text: 'Recommended'}],
         [{ text: 'Scan Face'}, this.productsButton(telegramId)],
+        [{ text: 'My Orders'}],
       ],
       resize_keyboard: true,
     };
@@ -125,6 +126,7 @@ export class TelegramUpdate {
       keyboard: [
         [{ text: 'Profile'}, { text: 'Recommended'}],
         [{ text: 'Scan Face'}, this.productsButton(telegramId)],
+        [{ text: 'My Orders'}],
         [{ text: 'Customers'}, { text: 'Orders'}],
         [{ text: 'Web Catalog'}, { text: 'Settings'}],
         [{ text: 'Logout'}],
@@ -974,6 +976,175 @@ export class TelegramUpdate {
   }
 
   // ─────────────────────────────────────────────
+  // Inline: Pay remaining balance
+  // ─────────────────────────────────────────────
+  @Action(/^pay_remaining_(.+)$/)
+  async onPayRemainingCallback(@Ctx() ctx: Context) {
+    const chatId = String(ctx.chat!.id);
+    const data =
+      ctx.callbackQuery && 'data' in ctx.callbackQuery
+        ? ctx.callbackQuery.data
+        : '';
+    const orderId = data.replace(/^pay_remaining_/, '');
+
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.answerCbQuery('Please register first.');
+      return;
+    }
+
+    try {
+      const order = await this.orderService.findOne(orderId);
+      if (order.customerId !== customer.id) {
+        await ctx.answerCbQuery('This order is not yours.');
+        return;
+      }
+      const remaining = this.orderService.remainingDue(order);
+      const stage = this.orderService.effectivePaymentStage(order);
+      if (stage !== 'partial' || remaining <= 0.01) {
+        await ctx.answerCbQuery('No remaining balance on this order.');
+        return;
+      }
+
+      await ctx.answerCbQuery();
+      this.orderSessions.set(chatId, {
+        step: 'awaiting_balance_payment_method',
+        productId: order.productId,
+        customerId: customer.id,
+        cost: Number(order.cost) || 0,
+        productName: order.product?.name ?? 'Product',
+        maxStock: 1,
+        quantity: order.quantity,
+        existingOrderId: order.id,
+        remainingAmount: remaining,
+        totalCost: this.orderService.lineTotal(order),
+      });
+
+      const paymentInfo = await this.settingsService.getPaymentInfo();
+      await ctx.reply(
+        `*Pay remaining balance*\n\n` +
+          `${order.product?.name ?? 'Product'} × ${order.quantity}\n` +
+          `Remaining: *${remaining.toFixed(2)} ETB*\n\n` +
+          `CBE: \`${paymentInfo.bankAccount.accountNumber}\`\n` +
+          `Telebirr: \`${paymentInfo.telebirr.phoneNumber}\`\n\n` +
+          `How did you pay?`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              [{ text: 'Paid via CBE' }, { text: 'Paid via Telebirr' }],
+              [{ text: 'Cancel order' }],
+            ],
+            resize_keyboard: true,
+            one_time_keyboard: true,
+          },
+        },
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.warn(`Pay remaining failed: ${msg}`);
+      await ctx.answerCbQuery('Could not start payment.');
+    }
+  }
+
+  private async showMyOrders(ctx: Context) {
+    const customer = await this.customerService.findByTelegramId(ctx.from!.id);
+    if (!customer) {
+      await ctx.reply(
+        `Please complete your registration first by sending /start.`,
+        { reply_markup: this.userKeyboard(ctx.from?.id) },
+      );
+      return;
+    }
+
+    const page = await this.orderService.findPageForCustomer(customer.id, {
+      page: 1,
+      pageSize: 10,
+    });
+
+    if (!page.items.length) {
+      await ctx.reply(`You have no orders yet.`, {
+        reply_markup: this.userKeyboard(ctx.from?.id),
+      });
+      return;
+    }
+
+    await ctx.reply(`*My Orders* (${page.total})`, {
+      parse_mode: 'Markdown',
+      reply_markup: this.userKeyboard(ctx.from?.id),
+    });
+
+    for (const order of page.items) {
+      const total = this.orderService.lineTotal(order);
+      const stage = this.orderService.effectivePaymentStage(order);
+      const remaining = this.orderService.remainingDue(order);
+      const paid =
+        Number(order.amountPaid) ||
+        (stage !== 'unpaid' ? Number(order.advancePaymentAmount) || 0 : 0);
+      const methodLabel =
+        order.paymentMethod === 'telebirr'
+          ? 'Telebirr'
+          : order.paymentMethod === 'bank'
+            ? 'CBE'
+            : '';
+
+      let paymentLine = '';
+      if (stage === 'full') {
+        paymentLine = `Payment: *Fully paid*${methodLabel ? ` · ${methodLabel}` : ''}`;
+      } else if (stage === 'partial') {
+        paymentLine =
+          `Payment: *Verified*${methodLabel ? ` · ${methodLabel}` : ''}\n` +
+          `Paid ${paid.toFixed(2)} / ${total.toFixed(2)} ETB · Remaining *${remaining.toFixed(2)} ETB*`;
+      } else if (order.status === 'payment_submitted') {
+        paymentLine = `Payment: Under review`;
+      } else if (order.status === 'awaiting_payment') {
+        paymentLine = `Payment: Awaiting · Advance ${(Number(order.advancePaymentAmount) || 0).toFixed(2)} ETB`;
+      }
+
+      const statusLabel =
+        order.status === 'confirmed' && stage === 'partial'
+          ? 'Verified (half paid)'
+          : order.status === 'confirmed' && stage === 'full'
+            ? 'Verified (fully paid)'
+            : order.status;
+
+      const text =
+        `*${order.product?.name ?? 'Product'}* × ${order.quantity}\n` +
+        `Status: ${statusLabel}\n` +
+        `${paymentLine}`;
+
+      const buttons: { text: string; callback_data: string }[][] = [];
+      if (stage === 'partial' && remaining > 0.01) {
+        buttons.push([
+          {
+            text: `Pay remaining ${remaining.toFixed(2)} ETB`,
+            callback_data: `pay_remaining_${order.id}`,
+          },
+        ]);
+      }
+      if (
+        ['pending', 'awaiting_payment', 'payment_submitted'].includes(
+          order.status,
+        )
+      ) {
+        buttons.push([
+          {
+            text: 'Cancel order',
+            callback_data: `cancel_order_${order.id}`,
+          },
+        ]);
+      }
+
+      await ctx.reply(text, {
+        parse_mode: 'Markdown',
+        reply_markup: buttons.length
+          ? { inline_keyboard: buttons }
+          : undefined,
+      });
+    }
+  }
+
+  // ─────────────────────────────────────────────
   // Inline: Clear Cart from 24h reminder
   // ─────────────────────────────────────────────
   @Action(/^clear_cart_(.+)$/)
@@ -1021,7 +1192,8 @@ export class TelegramUpdate {
     const orderSession = this.orderSessions.get(chatId);
     if (
       orderSession &&
-      orderSession.step === 'awaiting_payment_evidence'&&
+      (orderSession.step === 'awaiting_payment_evidence' ||
+        orderSession.step === 'awaiting_balance_payment_evidence') &&
       this.isPhotoMessage(ctx)
     ) {
       await this.handleOrderPaymentPhoto(ctx, chatId, orderSession);
@@ -1111,6 +1283,13 @@ export class TelegramUpdate {
     if (this.menuEq(text, 'Scan Face')) {
       this.catalogSessions.delete(chatId);
       await this.startFaceScan(ctx, chatId);
+      return;
+    }
+
+    if (this.menuEq(text, 'My Orders')) {
+      this.catalogSessions.delete(chatId);
+      this.scanSessions.delete(chatId);
+      await this.showMyOrders(ctx);
       return;
     }
 
@@ -1210,6 +1389,7 @@ export class TelegramUpdate {
       'Back',
       'Customers',
       'Orders',
+      'My Orders',
       'Web Catalog',
       'Settings',
       'Logout',
@@ -1717,6 +1897,155 @@ export class TelegramUpdate {
       await this.completeBotOrder(ctx, chatId, session, evidence, method);
       return;
     }
+
+    // ── Remaining balance: method ──
+    if (session.step === 'awaiting_balance_payment_method') {
+      if (text.includes('CBE') || text.includes('Bank')) {
+        session.paymentMethod = 'bank';
+        session.step = 'awaiting_balance_payment_evidence';
+        session.pendingPaymentPhotoUrl = undefined;
+        this.orderSessions.set(chatId, session);
+        await ctx.reply(
+          `Pay *${(session.remainingAmount ?? 0).toFixed(2)} ETB* remaining.\n\n` +
+            `Send a *screenshot* or type your *transaction number*.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
+        );
+      } else if (text.includes('Telebirr')) {
+        session.paymentMethod = 'telebirr';
+        session.step = 'awaiting_balance_payment_evidence';
+        session.pendingPaymentPhotoUrl = undefined;
+        this.orderSessions.set(chatId, session);
+        await ctx.reply(
+          `Pay *${(session.remainingAmount ?? 0).toFixed(2)} ETB* remaining.\n\n` +
+            `Send a *screenshot* or type your *transaction number*.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
+        );
+      } else {
+        await ctx.reply('Please choose how you paid using the buttons below.');
+      }
+      return;
+    }
+
+    // ── Remaining balance: evidence ──
+    if (session.step === 'awaiting_balance_payment_evidence') {
+      if (this.menuEq(text, 'Remove screenshot') || /^remove/i.test(text)) {
+        session.pendingPaymentPhotoUrl = undefined;
+        this.orderSessions.set(chatId, session);
+        await ctx.reply(
+          'Screenshot cleared. Send a new photo or type your *transaction number*.',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      if (this.menuEq(text, 'Confirm payment') && session.pendingPaymentPhotoUrl) {
+        const method = session.paymentMethod ?? 'telebirr';
+        const evidence = session.pendingPaymentPhotoUrl;
+        session.pendingPaymentPhotoUrl = undefined;
+        await this.completeBalancePayment(ctx, chatId, session, evidence, method);
+        return;
+      }
+
+      await this.completeBalancePayment(
+        ctx,
+        chatId,
+        session,
+        text.trim(),
+        session.paymentMethod ?? 'telebirr',
+      );
+      return;
+    }
+  }
+
+  private async completeBalancePayment(
+    ctx: Context,
+    chatId: string,
+    session: OrderSession,
+    paymentEvidence: string,
+    paymentMethod: string,
+  ) {
+    const orderId = session.existingOrderId;
+    if (!orderId) {
+      this.orderSessions.delete(chatId);
+      await ctx.reply('Session expired. Open My Orders again.', {
+        reply_markup: this.userKeyboard(ctx.from?.id),
+      });
+      return;
+    }
+
+    try {
+      const updated = await this.orderService.submitPaymentEvidence(
+        orderId,
+        session.customerId,
+        {
+          paymentMethod: paymentMethod as 'bank' | 'telebirr',
+          paymentEvidence,
+        },
+      );
+      const stage = this.orderService.effectivePaymentStage(updated);
+      if (stage === 'full') {
+        await ctx.reply(
+          `✅ *Remaining payment verified*\n\n` +
+            `${session.productName} is now fully paid.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: this.userKeyboard(ctx.from?.id),
+          },
+        );
+      } else {
+        await ctx.reply(
+          `Payment submitted — verifying with the bank. We'll confirm shortly.`,
+          { reply_markup: this.userKeyboard(ctx.from?.id) },
+        );
+      }
+      this.orderSessions.delete(chatId);
+    } catch (err) {
+      let msg = err instanceof Error ? err.message : String(err);
+      if (
+        err &&
+        typeof err === 'object' &&
+        'getResponse' in err &&
+        typeof (err as { getResponse: () => unknown }).getResponse === 'function'
+      ) {
+        const body = (err as { getResponse: () => unknown }).getResponse();
+        if (typeof body === 'string') msg = body;
+        else if (body && typeof body === 'object' && 'message' in body) {
+          const m = (body as { message: string | string[] }).message;
+          msg = Array.isArray(m) ? m.join('') : String(m);
+        }
+      }
+      await ctx.reply(
+        `Payment verification failed:\n${msg}\n\nPlease paste the correct transaction number or send a clearer receipt.`,
+        { reply_markup: this.userKeyboard(ctx.from?.id) },
+      );
+    }
   }
 
   private async applyBotDeliveryLocation(
@@ -1931,6 +2260,14 @@ export class TelegramUpdate {
       }
 
       const isVerified = verifyResult.outcome === 'verified';
+      const paid = isVerified
+        ? this.orderService.resolvePaidFromAmount(
+            verifyResult.amount,
+            advance,
+            total,
+          )
+        : { paymentStage: 'unpaid' as const, amountPaid: 0 };
+
       const order = await this.orderService.create({
         customerId: session.customerId,
         productId: session.productId,
@@ -1946,10 +2283,14 @@ export class TelegramUpdate {
         deliveryFee: session.deliveryFee ?? 0,
         expectedDeliveryDate: tomorrow,
         advancePaymentAmount: advance,
+        amountPaid: paid.amountPaid,
+        paymentStage: paid.paymentStage,
         paymentMethod,
         paymentEvidence: v.extractedTxId,
         paymentSubmittedAt: new Date(),
         paymentVerifiedAt: isVerified ? new Date() : null,
+        balanceVerifiedAt:
+          paid.paymentStage === 'full' ? new Date() : null,
         verifyEtRequestId: verifyResult.requestId ?? null,
         verifyEtStatus: verifyResult.outcome,
         verifyEtRawResponse:
@@ -1966,29 +2307,50 @@ export class TelegramUpdate {
           ? session.pickupLocationName || 'Store pickup'
           : session.deliveryAddress || 'Your location';
 
-      const summary =
-        `${isVerified ? '*Order confirmed*': '*Order placed — verifying payment*'}\n\n`+
-        `Prepayment: *${advance.toFixed(2)} ETB*\n`+
-        `Expected: *${expectedDate}*\n`+
-        `${location}`+
-        (isVerified ? '': `\n\nWe'll message you when payment is confirmed.`);
+      const remaining = Math.max(0, total - paid.amountPaid);
+      const summary = !isVerified
+        ? `*Order placed — verifying payment*\n\n` +
+          `Prepayment: *${advance.toFixed(2)} ETB*\n` +
+          `Expected: *${expectedDate}*\n` +
+          `${location}\n\nWe'll message you when payment is confirmed.`
+        : paid.paymentStage === 'full'
+          ? `*Order confirmed — fully paid*\n\n` +
+            `Paid: *${paid.amountPaid.toFixed(2)} ETB*\n` +
+            `Expected: *${expectedDate}*\n` +
+            `${location}`
+          : `*Half payment verified*\n\n` +
+            `Paid: *${paid.amountPaid.toFixed(2)} ETB*\n` +
+            `Remaining: *${remaining.toFixed(2)} ETB*\n` +
+            `Expected: *${expectedDate}*\n` +
+            `${location}`;
+
+      const inlineRows: { text: string; callback_data: string }[][] = [];
+      if (isVerified && paid.paymentStage === 'partial' && remaining > 0.01) {
+        inlineRows.push([
+          {
+            text: `Pay remaining ${remaining.toFixed(2)} ETB`,
+            callback_data: `pay_remaining_${order.id}`,
+          },
+        ]);
+      }
+      inlineRows.push([
+        {
+          text: 'Cancel order',
+          callback_data: `cancel_order_${order.id}`,
+        },
+      ]);
 
       await ctx.reply(summary, {
         parse_mode: 'Markdown',
-        reply_markup: {
-          inline_keyboard: [
-            [
-              {
-                text: 'Cancel order',
-                callback_data: `cancel_order_${order.id}`,
-              },
-            ],
-          ],
-        },
+        reply_markup: { inline_keyboard: inlineRows },
       });
 
       if (!isVerified) {
-        this.orderService.scheduleFinishQueuedVerification([order], advance);
+        this.orderService.scheduleFinishQueuedVerification(
+          [order],
+          advance,
+          total,
+        );
       }
 
       await ctx.reply(`Need help? ${supportPhone}`, {
