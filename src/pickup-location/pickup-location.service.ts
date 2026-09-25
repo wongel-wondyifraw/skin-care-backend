@@ -3,6 +3,15 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PickupLocation } from './pickup-location.entity.js';
 
+export type PickupLocationInput = {
+  name: string;
+  address: string;
+  description?: string | null;
+  enabled?: boolean;
+  lat?: number | null;
+  lon?: number | null;
+};
+
 @Injectable()
 export class PickupLocationService {
   constructor(
@@ -27,16 +36,14 @@ export class PickupLocationService {
     return loc;
   }
 
-  async create(data: {
-    name: string;
-    address: string;
-    enabled?: boolean;
-    lat?: number | null;
-    lon?: number | null;
-  }): Promise<PickupLocation> {
+  async create(data: PickupLocationInput): Promise<PickupLocation> {
     const loc = this.repo.create({
       name: data.name.trim(),
       address: data.address.trim(),
+      description:
+        data.description != null && String(data.description).trim()
+          ? String(data.description).trim()
+          : null,
       enabled: data.enabled ?? true,
       lat: data.lat != null ? Number(data.lat) : null,
       lon: data.lon != null ? Number(data.lon) : null,
@@ -46,17 +53,17 @@ export class PickupLocationService {
 
   async update(
     id: string,
-    data: {
-      name?: string;
-      address?: string;
-      enabled?: boolean;
-      lat?: number | null;
-      lon?: number | null;
-    },
+    data: Partial<PickupLocationInput>,
   ): Promise<PickupLocation> {
     const loc = await this.findOne(id);
     if (data.name !== undefined) loc.name = data.name.trim();
     if (data.address !== undefined) loc.address = data.address.trim();
+    if (data.description !== undefined) {
+      loc.description =
+        data.description != null && String(data.description).trim()
+          ? String(data.description).trim()
+          : null;
+    }
     if (data.enabled !== undefined) loc.enabled = data.enabled;
     if (data.lat !== undefined) {
       loc.lat = data.lat != null ? Number(data.lat) : null;

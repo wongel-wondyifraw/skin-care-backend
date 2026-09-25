@@ -27,6 +27,11 @@ export class DeliveryOrigin {
 
   @IsString()
   displayAddress: string;
+
+  /** Notes shown to customers for delivery drop-off guidance. */
+  @IsOptional()
+  @IsString()
+  description?: string;
 }
 
 export class DeliveryBand {
@@ -153,6 +158,7 @@ export class SettingsService {
       lat: 9.0192,
       lon: 38.7525,
       displayAddress: 'Addis Ababa',
+      description: '',
     };
   }
 

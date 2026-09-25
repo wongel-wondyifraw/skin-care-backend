@@ -17,6 +17,10 @@ export class PickupLocation {
   @Column({ type: 'text' })
   address: string;
 
+  /** Shown to customers for finding the store (landmarks, hours, entrance notes). */
+  @Column({ type: 'text', nullable: true })
+  description: string | null;
+
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
   lat: number | null;
 

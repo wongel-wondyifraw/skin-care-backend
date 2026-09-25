@@ -34,6 +34,7 @@ export class PickupLocationController {
     body: {
       name: string;
       address: string;
+      description?: string | null;
       enabled?: boolean;
       lat?: number | null;
       lon?: number | null;
@@ -49,6 +50,7 @@ export class PickupLocationController {
     body: {
       name?: string;
       address?: string;
+      description?: string | null;
       enabled?: boolean;
       lat?: number | null;
       lon?: number | null;

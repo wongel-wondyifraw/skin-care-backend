@@ -94,15 +94,44 @@ export class LocationIqService {
     }
   }
 
+  /** Straight-line distance when driving directions are unavailable */
+  private haversineKm(
+    lat1: number,
+    lon1: number,
+    lat2: number,
+    lon2: number,
+  ): number {
+    const toRad = (d: number) => (d * Math.PI) / 180;
+    const R = 6371;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(lat1)) *
+        Math.cos(toRad(lat2)) *
+        Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
   async getDrivingDistance(
     originLat: number,
     originLon: number,
     destLat: number,
     destLon: number,
   ): Promise<{ distanceKm: number; durationMinutes: number }> {
+    const fallbackKm = this.haversineKm(
+      originLat,
+      originLon,
+      destLat,
+      destLon,
+    );
+    const fallbackDuration = Math.max(1, Math.round((fallbackKm / 25) * 60));
+
     if (!this.apiKey) {
-      this.logger.warn('LOCATIONIQ_API_KEY is not set');
-      return { distanceKm: 0, durationMinutes: 0 };
+      this.logger.warn(
+        'LOCATIONIQ_API_KEY is not set — using straight-line distance',
+      );
+      return { distanceKm: fallbackKm, durationMinutes: fallbackDuration };
     }
 
     try {
@@ -119,16 +148,24 @@ export class LocationIqService {
 
       if (data.routes && data.routes.length > 0) {
         const route = data.routes[0];
-        return {
-          distanceKm: route.distance / 1000,
-          durationMinutes: Math.round(route.duration / 60),
-        };
+        const distanceKm = Number(route.distance) / 1000;
+        if (Number.isFinite(distanceKm) && distanceKm > 0) {
+          return {
+            distanceKm,
+            durationMinutes: Math.round(Number(route.duration) / 60) || fallbackDuration,
+          };
+        }
       }
 
-      return { distanceKm: 0, durationMinutes: 0 };
+      this.logger.warn(
+        'LocationIQ directions empty — using straight-line distance',
+      );
+      return { distanceKm: fallbackKm, durationMinutes: fallbackDuration };
     } catch (err) {
-      this.logger.error(`Driving distance failed: ${(err as Error).message}`);
-      return { distanceKm: 0, durationMinutes: 0 };
+      this.logger.error(
+        `Driving distance failed: ${(err as Error).message} — using straight-line`,
+      );
+      return { distanceKm: fallbackKm, durationMinutes: fallbackDuration };
     }
   }
 
@@ -145,6 +182,21 @@ export class LocationIqService {
     const origin = await this.settingsService.getDeliveryOrigin();
     const rate = await this.settingsService.getDeliveryRate();
 
+    if (
+      !Number.isFinite(destLat) ||
+      !Number.isFinite(destLon) ||
+      !Number.isFinite(origin.lat) ||
+      !Number.isFinite(origin.lon)
+    ) {
+      return {
+        distanceKm: 0,
+        fee: 0,
+        durationMinutes: 0,
+        withinRadius: false,
+        bandLabel: null,
+      };
+    }
+
     const { distanceKm, durationMinutes } = await this.getDrivingDistance(
       origin.lat,
       origin.lon,
@@ -152,18 +204,7 @@ export class LocationIqService {
       destLon,
     );
 
-    if (distanceKm === 0) {
-      const first = rate.bands[0];
-      return {
-        distanceKm: 0,
-        fee: first?.fee ?? 350,
-        durationMinutes: 0,
-        withinRadius: true,
-        bandLabel: first ? `${first.fromKm}–${first.toKm} km` : null,
-      };
-    }
-
-    const rounded = parseFloat(distanceKm.toFixed(2));
+    const rounded = parseFloat(Math.max(0, distanceKm).toFixed(2));
     const priced = this.settingsService.feeForDistanceKm(rounded, rate);
 
     return {

@@ -37,8 +37,8 @@ type ReplyButton = { text: string; web_app?: { url: string } };
 /** Sticky submenu after tapping Products (fallback when Mini App URL is unset) */
 const PRODUCTS_KEYBOARD = {
   keyboard: [
-    [{ text: '✨ Recommended' }, { text: '📂 Categories' }],
-    [{ text: '🔍 Search Product' }, { text: '◀️ Back' }],
+    [{ text: 'Recommended'}, { text: 'Categories'}],
+    [{ text: 'Search Product'}, { text: 'Back'}],
   ],
   resize_keyboard: true,
 };
@@ -78,23 +78,43 @@ export class TelegramUpdate {
 
   private productsButton(telegramId?: number): ReplyButton {
     const base = this.shopWebAppUrl();
-    if (!base) return { text: '📦 Products' };
+    if (!base) return { text: 'Products' };
     if (!telegramId) {
-      return { text: '📦 Products', web_app: { url: base } };
+      return { text: 'Products', web_app: { url: base } };
     }
     const sep = base.includes('?') ? '&' : '?';
     return {
-      text: '📦 Products',
+      text: 'Products',
       web_app: { url: `${base}${sep}telegramId=${telegramId}` },
     };
+  }
+
+  /** Strip emoji / symbols so old keyboards and plain labels both match. */
+  private menuKey(text: string): string {
+    return text
+      .replace(/\p{Extended_Pictographic}/gu, '')
+      .replace(/[\uFE0F\u200D◀▶]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLowerCase();
+  }
+
+  private menuEq(text: string, ...labels: string[]): boolean {
+    const key = this.menuKey(text);
+    return labels.some((l) => key === this.menuKey(l));
+  }
+
+  private menuIncludes(text: string, ...labels: string[]): boolean {
+    const key = this.menuKey(text);
+    return labels.some((l) => key.includes(this.menuKey(l)));
   }
 
   /** Main user reply keyboard — Products opens the Mini App when configured. */
   private userKeyboard(telegramId?: number) {
     return {
       keyboard: [
-        [{ text: '👤 Profile' }, { text: '✨ Recommended' }],
-        [{ text: '🔍 Scan Face' }, this.productsButton(telegramId)],
+        [{ text: 'Profile'}, { text: 'Recommended'}],
+        [{ text: 'Scan Face'}, this.productsButton(telegramId)],
       ],
       resize_keyboard: true,
     };
@@ -103,11 +123,11 @@ export class TelegramUpdate {
   private adminKeyboard(telegramId?: number) {
     return {
       keyboard: [
-        [{ text: '👤 Profile' }, { text: '✨ Recommended' }],
-        [{ text: '🔍 Scan Face' }, this.productsButton(telegramId)],
-        [{ text: '👥 Customers' }, { text: '🛒 Orders' }],
-        [{ text: '🌐 Web Catalog' }, { text: '⚙️ Settings' }],
-        [{ text: '🚪 Logout' }],
+        [{ text: 'Profile'}, { text: 'Recommended'}],
+        [{ text: 'Scan Face'}, this.productsButton(telegramId)],
+        [{ text: 'Customers'}, { text: 'Orders'}],
+        [{ text: 'Web Catalog'}, { text: 'Settings'}],
+        [{ text: 'Logout'}],
       ],
       resize_keyboard: true,
     };
@@ -132,20 +152,20 @@ export class TelegramUpdate {
     const existing = await this.customerService.findByTelegramId(telegramId);
     if (existing) {
       await ctx.reply(
-        `Welcome back, ${existing.fullName}! 👋\n\n` +
-          `You are already registered with Medaf Skin Care. 🌿\n` +
+        `Welcome back, ${existing.fullName}! \n\n`+
+          `You are already registered with Medaf Skin Care. \n`+
           `We will keep you updated on new arrivals and offers!`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
       return;
     }
 
-    this.sessions.set(chatId, { step: 'awaiting_name' });
+    this.sessions.set(chatId, { step: 'awaiting_name'});
 
     await ctx.reply(
-      `👋 Welcome to Medaf Skin Care, ${firstName}! 🌿✨\n\n` +
-        `We offer premium skincare products tailored for every skin type.\n\n` +
-        `Let's get you registered — it only takes a moment.\n\n` +
+      `Welcome to Medaf Skin Care, ${firstName}! \n\n`+
+        `We offer premium skincare products tailored for every skin type.\n\n`+
+        `Let's get you registered — it only takes a moment.\n\n`+
         `What is your full name?`,
     );
   }
@@ -158,10 +178,10 @@ export class TelegramUpdate {
   async onSupportCommand(@Ctx() ctx: Context) {
     const phone = await this.settingsService.getSupportPhone();
     await ctx.reply(
-      `📞 *Customer Support — Medaf Skin Care*\n\n` +
-        `Need help with an order, advice, or delivery?\n` +
-        `Call or message our support team: *${phone}*\n\n` +
-        `We're here to assist you! 🌿`,
+      `*Customer Support — Medaf Skin Care*\n\n`+
+        `Need help with an order, advice, or delivery?\n`+
+        `Call or message our support team: *${phone}*\n\n`+
+        `We're here to assist you! `,
       {
         parse_mode: 'Markdown',
         reply_markup: this.userKeyboard(ctx.from?.id),
@@ -195,18 +215,18 @@ export class TelegramUpdate {
     const skinTypeName = customer.skinType?.name ?? 'Not specified';
 
     await ctx.reply(
-      `👤 Your Profile\n\n` +
-        `📝 Name: ${customer.fullName}\n` +
-        `📞 Phone: ${customer.phone}\n` +
-        `🌿 Skin type: ${skinTypeName}\n` +
-        `📍 Address: ${customer.address}\n\n` +
+      `Your Profile\n\n`+
+        `Name: ${customer.fullName}\n`+
+        `Phone: ${customer.phone}\n`+
+        `Skin type: ${skinTypeName}\n`+
+        `Address: ${customer.address}\n\n`+
         `To edit, choose a field:`,
       {
         reply_markup: {
           keyboard: [
-            [{ text: '📝 Edit Name' }, { text: '📞 Edit Phone' }],
-            [{ text: '🌿 Edit Skin Type' }, { text: '📍 Edit Address' }],
-            [{ text: '❌ Cancel' }],
+            [{ text: 'Edit Name'}, { text: 'Edit Phone'}],
+            [{ text: 'Edit Skin Type'}, { text: 'Edit Address'}],
+            [{ text: 'Cancel'}],
           ],
           resize_keyboard: true,
           one_time_keyboard: true,
@@ -234,7 +254,7 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      `⏳ Analyzing your skin type and our product catalog...\n\nThis may take a few seconds.`,
+      `Analyzing your skin type and our product catalog...\n\nThis may take a few seconds.`,
       { reply_markup: this.userKeyboard(ctx.from?.id) },
     );
 
@@ -271,7 +291,7 @@ export class TelegramUpdate {
 
       if (filteredProducts.length === 0) {
         await ctx.reply(
-          `😔 Unfortunately, we don't have any products specifically for ${userSkinType} skin type in our catalog yet.\n\n` +
+          `Unfortunately, we don't have any products specifically for ${userSkinType} skin type in our catalog yet.\n\n`+
             `Please check back later, or contact our support team for personalized recommendations!`,
           { reply_markup: this.userKeyboard(ctx.from?.id) },
         );
@@ -286,8 +306,8 @@ export class TelegramUpdate {
           .map((p) => `• ${p.name}`)
           .join('\n');
         await ctx.reply(
-          `We have products for ${userSkinType || 'your'} skin type, but they are currently out of stock:\n\n` +
-            `${productNames}\n\n` +
+          `We have products for ${userSkinType || 'your'} skin type, but they are currently out of stock:\n\n`+
+            `${productNames}\n\n`+
             `Please check back soon or contact us to pre-order!`,
           { reply_markup: this.userKeyboard(ctx.from?.id) },
         );
@@ -335,7 +355,7 @@ export class TelegramUpdate {
       }
 
       // ── Step 3: Send a photo card for each recommended product ──
-      await ctx.reply(`🛍️ Here are the products recommended for you:`);
+      await ctx.reply(`Here are the products recommended for you:`);
 
       const cards = recommendedProducts.slice(0, MAX_PRODUCT_CARDS);
       for (let i = 0; i < cards.length; i++) {
@@ -346,13 +366,13 @@ export class TelegramUpdate {
             : 'Price not set';
 
         // Caption stays short — details already appear in the advice text
-        const caption = `🌿 ${product.name}\n💰 ${price}`;
+        const caption = `${product.name}\n ${price}`;
 
         const inlineKeyboard = {
           inline_keyboard: [
             [
               {
-                text: product.stock > 0 ? '🛒 Order Now' : '🔔 Notify Me',
+                text: product.stock > 0 ? 'Order Now': 'Notify Me',
                 callback_data: `order_${product.id}`,
               },
             ],
@@ -368,7 +388,7 @@ export class TelegramUpdate {
       }
 
       // Restore the sticky keyboard after all cards are sent
-      await ctx.reply(`That's your personalized recommendation! 😊`, {
+      await ctx.reply(`That's your personalized recommendation! `, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
 
@@ -404,7 +424,7 @@ export class TelegramUpdate {
     if (imageUrl) {
       try {
         const res = await fetch(imageUrl, {
-          headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+          headers: { 'User-Agent': 'MedafSkinCareBot/1.0'},
           signal: AbortSignal.timeout(20_000),
         });
         if (!res.ok) {
@@ -458,7 +478,7 @@ export class TelegramUpdate {
       inline_keyboard: [
         [
           {
-            text: product.stock > 0 ? '🛒 Order Now' : '🔔 Notify Me',
+            text: product.stock > 0 ? 'Order Now': 'Notify Me',
             callback_data: `order_${product.id}`,
           },
         ],
@@ -476,7 +496,7 @@ export class TelegramUpdate {
     // When Mini App URL is configured, Products is a web_app button on the main
     // keyboard — this fallback is only for chats without SHOP_WEBAPP_URL.
     await ctx.reply(
-      header ?? `📦 Products\n\nChoose how you'd like to browse:`,
+      header ?? `Products\n\nChoose how you'd like to browse:`,
       { reply_markup: PRODUCTS_KEYBOARD },
     );
   }
@@ -508,7 +528,7 @@ export class TelegramUpdate {
 
     if (product.stock <= 0) {
       await ctx.reply(
-        `🔔 Thanks! We'll notify you when "${product.name}" is back in stock.`,
+        `Thanks! We'll notify you when "${product.name}" is back in stock.`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
       return;
@@ -530,8 +550,8 @@ export class TelegramUpdate {
     });
 
     const qtyButtons = [
-      [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
-      [{ text: '❌ Cancel order' }],
+      [{ text: '1'}, { text: '2'}, { text: '3'}, { text: '4'}],
+      [{ text: 'Cancel order'}],
     ];
 
     const unit = effectiveUnitPrice(
@@ -542,14 +562,14 @@ export class TelegramUpdate {
     const pct = Math.floor(Number(product.discountPercent) || 0);
     const priceLine =
       pct > 0
-        ? `💰 Sale: ${unit.toFixed(2)} ETB (−${pct}% off ${Number(product.price).toFixed(2)})\n`
-        : `💰 Unit price: ${unit.toFixed(2)} ETB\n`;
+        ? `Sale: ${unit.toFixed(2)} ETB (−${pct}% off ${Number(product.price).toFixed(2)})\n`
+        : `Unit price: ${unit.toFixed(2)} ETB\n`;
 
     await ctx.reply(
-      `🛒 Ordering: ${product.name}\n` +
+      `Ordering: ${product.name}\n`+
         priceLine +
-        `📦 In stock: ${product.stock}\n\n` +
-        `How many would you like?\n` +
+        `In stock: ${product.stock}\n\n`+
+        `How many would you like?\n`+
         `Tap 1–4, or type a number if you need more.`,
       {
         reply_markup: {
@@ -569,12 +589,12 @@ export class TelegramUpdate {
           ? `${Number(product.price).toFixed(2)} ETB`
           : 'Price not set';
       const stockNote =
-        product.stock > 0 ? `In stock (${product.stock})` : 'Out of stock';
+        product.stock > 0 ? `In stock (${product.stock})`: 'Out of stock';
       const caption =
-        `🌿 ${product.name}\n` +
-        (product.brand?.trim() ? `🏷️ ${product.brand.trim()}\n` : '') +
-        `💰 ${price}\n` +
-        `📦 ${stockNote}`;
+        `${product.name}\n`+
+        (product.brand?.trim() ? `${product.brand.trim()}\n`: '') +
+        `${price}\n`+
+        `${stockNote}`;
 
       await this.sendProductPhotoCard(
         ctx,
@@ -601,12 +621,12 @@ export class TelegramUpdate {
 
     const rows = categories.map((c) => [
       {
-        text: `📂 ${this.truncateLabel(c.name, 36)}`,
+        text: `${this.truncateLabel(c.name, 36)}`,
         callback_data: `pcat_${c.id}_1`,
       },
     ]);
 
-    await ctx.reply(`📂 Pick a category:`, {
+    await ctx.reply(`Pick a category:`, {
       reply_markup: { inline_keyboard: rows },
     });
   }
@@ -662,7 +682,7 @@ export class TelegramUpdate {
     const nav: { text: string; callback_data: string }[] = [];
     if (safePage > 1) {
       nav.push({
-        text: '◀️ Prev',
+        text: 'Prev',
         callback_data: `pcat_${categoryId}_${safePage - 1}`,
       });
     }
@@ -672,7 +692,7 @@ export class TelegramUpdate {
     });
     if (safePage < totalPages) {
       nav.push({
-        text: 'Next ▶️',
+        text: 'Next',
         callback_data: `pcat_${categoryId}_${safePage + 1}`,
       });
     }
@@ -681,14 +701,14 @@ export class TelegramUpdate {
       inline_keyboard: [
         ...productRows,
         nav,
-        [{ text: '📂 All categories', callback_data: 'pcats' }],
+        [{ text: 'All categories', callback_data: 'pcats'}],
       ],
     };
 
     const text =
-      `📂 ${categoryName}\n` + `Tap a product name (${result.total} total):`;
+      `${categoryName}\n`+ `Tap a product name (${result.total} total):`;
 
-    if (editMessage && 'editMessageText' in ctx) {
+    if (editMessage && 'editMessageText'in ctx) {
       try {
         await ctx.editMessageText(text, { reply_markup: markup });
         return;
@@ -742,7 +762,7 @@ export class TelegramUpdate {
     const nav: { text: string; callback_data: string }[] = [];
     if (safePage > 1) {
       nav.push({
-        text: '◀️ Prev',
+        text: 'Prev',
         callback_data: `psrch_${safePage - 1}`,
       });
     }
@@ -752,7 +772,7 @@ export class TelegramUpdate {
     });
     if (safePage < totalPages) {
       nav.push({
-        text: 'Next ▶️',
+        text: 'Next',
         callback_data: `psrch_${safePage + 1}`,
       });
     }
@@ -761,14 +781,14 @@ export class TelegramUpdate {
       inline_keyboard: [
         ...productRows,
         nav,
-        [{ text: '🔍 New search', callback_data: 'psearch_new' }],
+        [{ text: 'New search', callback_data: 'psearch_new'}],
       ],
     };
 
     const text =
-      `🔍 Results for "${search}"\n` + `Tap a product (${result.total} found):`;
+      `Results for "${search}"\n`+ `Tap a product (${result.total} found):`;
 
-    if (editMessage && 'editMessageText' in ctx) {
+    if (editMessage && 'editMessageText'in ctx) {
       try {
         await ctx.editMessageText(text, { reply_markup: markup });
         return;
@@ -781,12 +801,12 @@ export class TelegramUpdate {
   }
 
   private async startProductSearch(ctx: Context, chatId: string) {
-    this.catalogSessions.set(chatId, { step: 'awaiting_search' });
+    this.catalogSessions.set(chatId, { step: 'awaiting_search'});
     await ctx.reply(
-      `🔍 Search products\n\nType a product name (or part of it):`,
+      `Search products\n\nType a product name (or part of it):`,
       {
         reply_markup: {
-          keyboard: [[{ text: '◀️ Back' }]],
+          keyboard: [[{ text: 'Back'}]],
           resize_keyboard: true,
           one_time_keyboard: true,
         },
@@ -808,7 +828,7 @@ export class TelegramUpdate {
   async onCatalogCategoryPage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const match = /^pcat_(.+)_(\d+)$/.exec(data);
@@ -830,7 +850,7 @@ export class TelegramUpdate {
   async onCatalogSearchPage(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const match = /^psrch_(\d+)$/.exec(data);
@@ -859,7 +879,7 @@ export class TelegramUpdate {
   @Action(/^pview_(.+)$/)
   async onCatalogProductView(@Ctx() ctx: Context) {
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const match = /^pview_(.+)$/.exec(data);
@@ -886,10 +906,10 @@ export class TelegramUpdate {
     this.sessions.delete(chatId);
     this.profileEditSessions.delete(chatId);
 
-    this.adminSessions.set(chatId, { step: 'awaiting_password' });
+    this.adminSessions.set(chatId, { step: 'awaiting_password'});
 
     await ctx.reply(
-      `🔐 Admin access requested.\n\nPlease enter the admin password:`,
+      `Admin access requested.\n\nPlease enter the admin password:`,
       { reply_markup: { remove_keyboard: true } },
     );
   }
@@ -901,7 +921,7 @@ export class TelegramUpdate {
   async onOrderCallback(@Ctx() ctx: Context) {
     const chatId = String(ctx.chat!.id);
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const productId = data.replace(/^order_/, '');
@@ -916,7 +936,7 @@ export class TelegramUpdate {
   @Action(/^cancel_order_(.+)$/)
   async onCancelOrderCallback(@Ctx() ctx: Context) {
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const orderId = data.replace(/^cancel_order_/, '');
@@ -942,7 +962,7 @@ export class TelegramUpdate {
       await this.orderService.updateStatus(orderId, 'cancelled');
       await ctx.answerCbQuery('Order cancelled');
       await ctx.reply(
-        `❌ Order cancelled.\n\n🌿 ${order.product?.name ?? 'Product'}\n` +
+        `Order cancelled.\n\n ${order.product?.name ?? 'Product'}\n`+
           `Qty: ${order.quantity}\nNo stock was changed.`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
@@ -959,13 +979,13 @@ export class TelegramUpdate {
   @Action(/^clear_cart_(.+)$/)
   async onClearCartCallback(@Ctx() ctx: Context) {
     const data =
-      ctx.callbackQuery && 'data' in ctx.callbackQuery
+      ctx.callbackQuery && 'data'in ctx.callbackQuery
         ? ctx.callbackQuery.data
         : '';
     const customerId = data.replace(/^clear_cart_/, '');
     await this.cartService.clearCart(customerId);
     await ctx.answerCbQuery('Cart cleared!');
-    await ctx.reply('🗑️ Your cart has been cleared.', {
+    await ctx.reply('Your cart has been cleared.', {
       reply_markup: this.userKeyboard(ctx.from?.id),
     });
   }
@@ -979,7 +999,7 @@ export class TelegramUpdate {
     const message = ctx.message as Message.TextMessage &
       Message.ContactMessage &
       Message.LocationMessage;
-    const text = ('text' in message && message.text ? message.text : '').trim();
+    const text = ('text'in message && message.text ? message.text : '').trim();
 
     // WebApp orders are created via the shop API (not sendData / web_app_data).
     // Bot-native orders continue below through the Order buttons + chat flow.
@@ -1001,7 +1021,7 @@ export class TelegramUpdate {
     const orderSession = this.orderSessions.get(chatId);
     if (
       orderSession &&
-      orderSession.step === 'awaiting_payment_evidence' &&
+      orderSession.step === 'awaiting_payment_evidence'&&
       this.isPhotoMessage(ctx)
     ) {
       await this.handleOrderPaymentPhoto(ctx, chatId, orderSession);
@@ -1016,20 +1036,20 @@ export class TelegramUpdate {
 
     if (this.scanSessions.has(chatId)) {
       if (
-        text === '◀️ Back' ||
-        text === '👤 Profile' ||
-        text === '💡 Get Advice' ||
-        text === '✨ Recommended' ||
-        text === '📦 Products' ||
-        text === '🔍 Scan Face'
+        this.menuEq(text, 'Back')||
+        this.menuEq(text, 'Profile')||
+        this.menuEq(text, 'Get Advice')||
+        this.menuEq(text, 'Recommended')||
+        this.menuEq(text, 'Products')||
+        this.menuEq(text, 'Scan Face')
       ) {
         this.scanSessions.delete(chatId);
       } else if (!text) {
         await ctx.reply(
-          `Please send a clear face photo, or tap ◀️ Back to cancel.`,
+          `Please send a clear face photo, or tap Back to cancel.`,
           {
             reply_markup: {
-              keyboard: [[{ text: '◀️ Back' }]],
+              keyboard: [[{ text: 'Back'}]],
               resize_keyboard: true,
             },
           },
@@ -1037,7 +1057,7 @@ export class TelegramUpdate {
         return;
       } else {
         await ctx.reply(
-          `Send a photo of your face (not text), or tap ◀️ Back to cancel.`,
+          `Send a photo of your face (not text), or tap Back to cancel.`,
         );
         return;
       }
@@ -1046,7 +1066,7 @@ export class TelegramUpdate {
     // ── Product search query ─────────────────────────────────────
     const catalogSession = this.catalogSessions.get(chatId);
     if (catalogSession?.step === 'awaiting_search') {
-      if (text === '◀️ Back' || text === '📦 Products') {
+      if (this.menuEq(text, 'Back')|| this.menuEq(text, 'Products')) {
         this.catalogSessions.delete(chatId);
         await this.showProductsMenu(ctx);
         return;
@@ -1069,8 +1089,8 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── "👤 Profile" button press (always available) ─────────────
-    if (text === '👤 Profile') {
+    // ── " Profile" button press (always available) ─────────────
+    if (this.menuEq(text, 'Profile')) {
       this.catalogSessions.delete(chatId);
       const telegramId = ctx.from!.id;
       const customer = await this.customerService.findByTelegramId(telegramId);
@@ -1081,38 +1101,38 @@ export class TelegramUpdate {
     }
 
     // ── Recommended (legacy "Get Advice" still accepted) ─────────
-    if (text === '✨ Recommended' || text === '💡 Get Advice') {
+    if (this.menuEq(text, 'Recommended')|| this.menuEq(text, 'Get Advice')) {
       this.catalogSessions.delete(chatId);
       this.scanSessions.delete(chatId);
       await this.handleGetAdvice(ctx, chatId);
       return;
     }
 
-    if (text === '🔍 Scan Face') {
+    if (this.menuEq(text, 'Scan Face')) {
       this.catalogSessions.delete(chatId);
       await this.startFaceScan(ctx, chatId);
       return;
     }
 
     // ── Products browse (fallback when Mini App URL is not set) ──
-    if (text === '📦 Products') {
+    if (this.menuEq(text, 'Products')) {
       this.catalogSessions.delete(chatId);
       await this.showProductsMenu(ctx);
       return;
     }
 
-    if (text === '📂 Categories') {
+    if (this.menuEq(text, 'Categories')) {
       this.catalogSessions.delete(chatId);
       await this.showCategoryPicker(ctx);
       return;
     }
 
-    if (text === '🔍 Search Product') {
+    if (this.menuEq(text, 'Search Product')) {
       await this.startProductSearch(ctx, chatId);
       return;
     }
 
-    if (text === '◀️ Back') {
+    if (this.menuEq(text, 'Back')) {
       this.catalogSessions.delete(chatId);
       this.scanSessions.delete(chatId);
       const replyMarkup = this.adminSessions.isAuthenticated(chatId)
@@ -1175,25 +1195,25 @@ export class TelegramUpdate {
 
   private isPhotoMessage(ctx: Context): boolean {
     const msg = ctx.message as Message.PhotoMessage | undefined;
-    return Boolean(msg && 'photo' in msg && msg.photo?.length);
+    return Boolean(msg && 'photo'in msg && msg.photo?.length);
   }
 
   private isKnownKeyboardLabel(text: string): boolean {
     return [
-      '👤 Profile',
-      '💡 Get Advice',
-      '✨ Recommended',
-      '🔍 Scan Face',
-      '📦 Products',
-      '📂 Categories',
-      '🔍 Search Product',
-      '◀️ Back',
-      '👥 Customers',
-      '🛒 Orders',
-      '🌐 Web Catalog',
-      '⚙️ Settings',
-      '🚪 Logout',
-      '❌ Cancel order',
+      'Profile',
+      'Get Advice',
+      'Recommended',
+      'Scan Face',
+      'Products',
+      'Categories',
+      'Search Product',
+      'Back',
+      'Customers',
+      'Orders',
+      'Web Catalog',
+      'Settings',
+      'Logout',
+      'Cancel order',
       'Skip',
     ].includes(text);
   }
@@ -1214,13 +1234,13 @@ export class TelegramUpdate {
     });
 
     await ctx.reply(
-      `🔍 Scan Face\n\n` +
-        `Send a clear, front-facing photo of your face in good light.\n` +
-        `One face only — no heavy filters.\n\n` +
+      `Scan Face\n\n`+
+        `Send a clear, front-facing photo of your face in good light.\n`+
+        `One face only — no heavy filters.\n\n`+
         `This is not a medical diagnosis.`,
       {
         reply_markup: {
-          keyboard: [[{ text: '◀️ Back' }]],
+          keyboard: [[{ text: 'Back'}]],
           resize_keyboard: true,
         },
       },
@@ -1234,12 +1254,12 @@ export class TelegramUpdate {
     const msg = ctx.message as Message.PhotoMessage;
     const best = msg.photo[msg.photo.length - 1];
 
-    await ctx.reply(`⏳ Looking at your photo… this may take a few seconds.`);
+    await ctx.reply(`Looking at your photo… this may take a few seconds.`);
 
     try {
       const fileLink = await ctx.telegram.getFileLink(best.file_id);
       const res = await fetch(fileLink.href, {
-        headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+        headers: { 'User-Agent': 'MedafSkinCareBot/1.0'},
         signal: AbortSignal.timeout(20_000),
       });
       if (!res.ok) throw new Error(`Telegram file HTTP ${res.status}`);
@@ -1287,7 +1307,7 @@ export class TelegramUpdate {
             `Please send a clearer front-facing photo in good light — one face, no heavy filter.`,
           {
             reply_markup: {
-              keyboard: [[{ text: '◀️ Back' }]],
+              keyboard: [[{ text: 'Back'}]],
               resize_keyboard: true,
             },
           },
@@ -1328,7 +1348,7 @@ export class TelegramUpdate {
       }
 
       if (analysis.mentionedProducts.length > 0) {
-        await ctx.reply(`🛍️ Suggested products from our catalog:`);
+        await ctx.reply(`Suggested products from our catalog:`);
         const cards = analysis.mentionedProducts.slice(0, MAX_PRODUCT_CARDS);
         for (let i = 0; i < cards.length; i++) {
           const product = cards[i];
@@ -1339,7 +1359,7 @@ export class TelegramUpdate {
           await this.sendProductPhotoCard(
             ctx,
             product,
-            `🌿 ${product.name}\n💰 ${price}`,
+            `${product.name}\n ${price}`,
             this.productOrderMarkup(product),
           );
           if (i < cards.length - 1) {
@@ -1363,7 +1383,7 @@ export class TelegramUpdate {
         `Sorry, we could not analyze that photo. Please try again with a clearer image.`,
         {
           reply_markup: {
-            keyboard: [[{ text: '◀️ Back' }]],
+            keyboard: [[{ text: 'Back'}]],
             resize_keyboard: true,
           },
         },
@@ -1380,7 +1400,7 @@ export class TelegramUpdate {
       Message.ContactMessage &
       Message.LocationMessage,
   ) {
-    if (text === '❌ Cancel order') {
+    if (this.menuEq(text, 'Cancel order')) {
       this.orderSessions.delete(chatId);
       await ctx.reply(`Order cancelled.`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
@@ -1395,8 +1415,8 @@ export class TelegramUpdate {
         await ctx.reply(`Please tap 1–4 or type a whole number (1 or more).`, {
           reply_markup: {
             keyboard: [
-              [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
-              [{ text: '❌ Cancel order' }],
+              [{ text: '1'}, { text: '2'}, { text: '3'}, { text: '4'}],
+              [{ text: 'Cancel order'}],
             ],
             resize_keyboard: true,
             one_time_keyboard: true,
@@ -1411,8 +1431,8 @@ export class TelegramUpdate {
           {
             reply_markup: {
               keyboard: [
-                [{ text: '1' }, { text: '2' }, { text: '3' }, { text: '4' }],
-                [{ text: '❌ Cancel order' }],
+                [{ text: '1'}, { text: '2'}, { text: '3'}, { text: '4'}],
+                [{ text: 'Cancel order'}],
               ],
               resize_keyboard: true,
               one_time_keyboard: true,
@@ -1428,15 +1448,15 @@ export class TelegramUpdate {
 
       const subtotal = session.cost * qty;
       await ctx.reply(
-        `📦 *Order Summary:*\n` +
-          `🌿 ${session.productName} × ${qty} = ${subtotal.toFixed(2)} ETB\n\n` +
+        `*Order Summary:*\n`+
+          `${session.productName} × ${qty} = ${subtotal.toFixed(2)} ETB\n\n`+
           `How would you like to receive your order?`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
             keyboard: [
-              [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
-              [{ text: '❌ Cancel order' }],
+              [{ text: 'Delivery'}, { text: 'Store Pickup'}],
+              [{ text: 'Cancel order'}],
             ],
             resize_keyboard: true,
             one_time_keyboard: true,
@@ -1448,19 +1468,20 @@ export class TelegramUpdate {
 
     // ── Step 2: Fulfilment type ──
     if (session.step === 'awaiting_fulfilment_type') {
-      if (text.includes('Delivery') || text.includes('🚚')) {
+      if (this.menuIncludes(text, 'Delivery')) {
         session.fulfilmentType = 'delivery';
         session.step = 'awaiting_delivery_address';
         this.orderSessions.set(chatId, session);
         await ctx.reply(
-          `📍 *Share your delivery location*\n\n` +
-            `Tap *Share location* so we can calculate the exact delivery fee from the map.`,
+          `*Share your delivery location*\n\n`+
+            `Tap *Share location*, then *move the pin* on the map to your exact spot (or use your current GPS).\n\n`+
+            `You can also type an address and we'll place it on the map.`,
           {
             parse_mode: 'Markdown',
             reply_markup: {
               keyboard: [
-                [{ text: '📍 Share location', request_location: true }],
-                [{ text: '❌ Cancel order' }],
+                [{ text: 'Share location', request_location: true }],
+                [{ text: 'Cancel order'}],
               ],
               resize_keyboard: true,
               one_time_keyboard: true,
@@ -1470,7 +1491,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text.includes('Pickup') || text.includes('📍 Store') || text === '📍 Store Pickup') {
+      if (this.menuIncludes(text, 'Pickup', 'Store Pickup') || this.menuEq(text, 'Store Pickup')) {
         session.fulfilmentType = 'pickup';
         session.deliveryFee = 0;
         const locations = await this.pickupLocationService.findEnabled();
@@ -1484,12 +1505,16 @@ export class TelegramUpdate {
         session.step = 'awaiting_pickup_selection';
         this.orderSessions.set(chatId, session);
 
-        const locButtons = locations.map((loc) => [{ text: `📍 ${loc.name}` }]);
-        locButtons.push([{ text: '❌ Cancel order' }]);
+        const locButtons = locations.map((loc) => [{ text: `${loc.name}`}]);
+        locButtons.push([{ text: 'Cancel order'}]);
 
-        let locText = `📍 *Select a pickup location:*\n\n`;
+        let locText = `*Select a pickup location:*\n\n`;
         locations.forEach((l, idx) => {
-          locText += `${idx + 1}. *${l.name}*\n   ${l.address}\n\n`;
+          locText += `${idx + 1}. *${l.name}*\n${l.address}`;
+          if (l.description?.trim()) {
+            locText += `\n${l.description.trim()}`;
+          }
+          locText += `\n\n`;
         });
         locText += `Tap a location below:`;
 
@@ -1504,11 +1529,11 @@ export class TelegramUpdate {
         return;
       }
 
-      await ctx.reply('Please choose 🚚 Delivery or 📍 Store Pickup:', {
+      await ctx.reply('Please choose Delivery or Store Pickup:', {
         reply_markup: {
           keyboard: [
-            [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
-            [{ text: '❌ Cancel order' }],
+            [{ text: 'Delivery'}, { text: 'Store Pickup'}],
+            [{ text: 'Cancel order'}],
           ],
           resize_keyboard: true,
           one_time_keyboard: true,
@@ -1519,8 +1544,8 @@ export class TelegramUpdate {
 
     // ── Delivery: GPS location (map picker) ──
     if (
-      session.step === 'awaiting_delivery_address' &&
-      'location' in message &&
+      session.step === 'awaiting_delivery_address'&&
+      'location'in message &&
       message.location
     ) {
       await this.applyBotDeliveryLocation(
@@ -1534,16 +1559,17 @@ export class TelegramUpdate {
     }
 
     // Legacy "use saved" / change — redirect to map share
-    if (text === '✅ Use Saved Address' || text === '📝 Change Address') {
+    if (this.menuEq(text, 'Use Saved Address')|| this.menuEq(text, 'Change Address')) {
       session.step = 'awaiting_delivery_address';
       this.orderSessions.set(chatId, session);
       await ctx.reply(
-        `📍 Please share your delivery location from the map:`,
+        `Please share your delivery location from the map.\n\n`+
+          `Move the pin to the exact spot, or type an address.`,
         {
           reply_markup: {
             keyboard: [
-              [{ text: '📍 Share location', request_location: true }],
-              [{ text: '❌ Cancel order' }],
+              [{ text: 'Share location', request_location: true }],
+              [{ text: 'Cancel order'}],
             ],
             resize_keyboard: true,
             one_time_keyboard: true,
@@ -1554,14 +1580,29 @@ export class TelegramUpdate {
     }
 
     if (session.step === 'awaiting_delivery_address') {
+      const query = text.trim();
+      if (query.length >= 5) {
+        const suggestions = await this.locationIqService.autocomplete(query);
+        const first = suggestions[0];
+        if (first) {
+          const lat = parseFloat(first.lat);
+          const lon = parseFloat(first.lon);
+          if (Number.isFinite(lat) && Number.isFinite(lon)) {
+            await this.applyBotDeliveryLocation(ctx, chatId, session, lat, lon);
+            return;
+          }
+        }
+      }
+
       await ctx.reply(
-        `Please use the *Share location* button so we can price delivery accurately.`,
+        `Couldn't place that address on the map.\n\n`+
+          `Tap *Share location* and move the pin, or try a clearer address.`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
             keyboard: [
-              [{ text: '📍 Share location', request_location: true }],
-              [{ text: '❌ Cancel order' }],
+              [{ text: 'Share location', request_location: true }],
+              [{ text: 'Cancel order'}],
             ],
             resize_keyboard: true,
             one_time_keyboard: true,
@@ -1575,7 +1616,7 @@ export class TelegramUpdate {
     if (session.step === 'awaiting_pickup_selection') {
       const locations = await this.pickupLocationService.findEnabled();
       const cleanText = text
-        .replace(/^📍\s*/, '')
+        .replace(/^\s*/, '')
         .trim()
         .toLowerCase();
       const found = locations.find(
@@ -1593,12 +1634,22 @@ export class TelegramUpdate {
         if (lat != null && lon != null && Number.isFinite(lat) && Number.isFinite(lon)) {
           try {
             await ctx.replyWithLocation(lat, lon);
-            await ctx.reply(`📍 *${found.name}*\n${found.address}`, {
-              parse_mode: 'Markdown',
-            });
+            const desc = found.description?.trim();
+            await ctx.reply(
+              `*${found.name}*\n${found.address}` +
+                (desc ? `\n\n${desc}` : ''),
+              { parse_mode: 'Markdown' },
+            );
           } catch {
             // ignore map send failures
           }
+        } else {
+          const desc = found.description?.trim();
+          await ctx.reply(
+            `*${found.name}*\n${found.address}` +
+              (desc ? `\n\n${desc}` : ''),
+            { parse_mode: 'Markdown' },
+          );
         }
 
         await this.sendPaymentPrompt(ctx, chatId, session);
@@ -1615,14 +1666,14 @@ export class TelegramUpdate {
         session.paymentMethod = 'bank';
         session.step = 'awaiting_payment_evidence';
         await ctx.reply(
-          '📸 Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
+          'Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
           { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
         );
       } else if (text.includes('Telebirr')) {
         session.paymentMethod = 'telebirr';
         session.step = 'awaiting_payment_evidence';
         await ctx.reply(
-          '📸 Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
+          'Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
           { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
         );
       } else {
@@ -1647,23 +1698,23 @@ export class TelegramUpdate {
     lat: number,
     lon: number,
   ) {
-    await ctx.reply(`⏳ Calculating delivery fee…`);
+    await ctx.reply(`Calculating delivery fee…`);
 
     const feeRes = await this.locationIqService.calculateDeliveryFee(lat, lon);
     if (!feeRes.withinRadius) {
       await ctx.reply(
-        `❌ That location is outside our delivery area` +
+        `That location is outside our delivery area`+
           (feeRes.distanceKm
-            ? ` (${feeRes.distanceKm.toFixed(1)} km away)`
+            ? `(${feeRes.distanceKm.toFixed(1)} km away)`
             : '') +
           `.\n\nPlease share a closer location or choose *Store Pickup*.`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
             keyboard: [
-              [{ text: '📍 Share location', request_location: true }],
-              [{ text: '🚚 Delivery' }, { text: '📍 Store Pickup' }],
-              [{ text: '❌ Cancel order' }],
+              [{ text: 'Share location', request_location: true }],
+              [{ text: 'Delivery'}, { text: 'Store Pickup'}],
+              [{ text: 'Cancel order'}],
             ],
             resize_keyboard: true,
             one_time_keyboard: true,
@@ -1687,12 +1738,17 @@ export class TelegramUpdate {
     this.orderSessions.set(chatId, session);
 
     await ctx.reply(
-      `📍 *Your location*\n` +
-        `🚚 Delivery fee: *${feeRes.fee.toFixed(2)} ETB*` +
+      `*Your location*\n` +
+        `Delivery fee: *${feeRes.fee.toFixed(2)} ETB*` +
         (feeRes.bandLabel ? ` (${feeRes.bandLabel})` : '') +
-        `\n📏 ~${feeRes.distanceKm.toFixed(1)} km`,
+        `\n~${feeRes.distanceKm.toFixed(1)} km`,
       { parse_mode: 'Markdown' },
     );
+
+    const origin = await this.settingsService.getDeliveryOrigin();
+    if (origin.description?.trim()) {
+      await ctx.reply(`Delivery notes:\n${origin.description.trim()}`);
+    }
 
     await this.sendPaymentPrompt(ctx, chatId, session);
   }
@@ -1726,25 +1782,25 @@ export class TelegramUpdate {
 
     const isPickup = session.fulfilmentType === 'pickup';
     const locationLine = isPickup
-      ? `📍 ${session.pickupLocationName || 'Store pickup'}`
-      : `📍 ${session.deliveryAddress || 'Your location'}`;
+      ? `${session.pickupLocationName || 'Store pickup'}`
+      : `${session.deliveryAddress || 'Your location'}`;
 
     const message =
-      `*Order summary*\n\n` +
-      `${session.productName} × ${qty}\n` +
-      `${locationLine}\n` +
-      `📅 Expected: ${expectedDate}\n` +
-      `💵 Pay now (50%): *${advance.toFixed(2)} ETB*\n\n` +
-      `🏦 CBE: \`${bank.accountNumber}\` (${bank.accountName})\n` +
-      `📱 Telebirr: \`${telebirr.phoneNumber}\`\n\n` +
+      `*Order summary*\n\n`+
+      `${session.productName} × ${qty}\n`+
+      `${locationLine}\n`+
+      `Expected: ${expectedDate}\n`+
+      `Pay now (50%): *${advance.toFixed(2)} ETB*\n\n`+
+      `CBE: \`${bank.accountNumber}\`(${bank.accountName})\n`+
+      `Telebirr: \`${telebirr.phoneNumber}\`\n\n`+
       `How did you pay?`;
 
     await ctx.reply(message, {
       parse_mode: 'Markdown',
       reply_markup: {
         keyboard: [
-          [{ text: '🏦 Paid via CBE' }, { text: '📱 Paid via Telebirr' }],
-          [{ text: '❌ Cancel order' }],
+          [{ text: 'Paid via CBE'}, { text: 'Paid via Telebirr'}],
+          [{ text: 'Cancel order'}],
         ],
         resize_keyboard: true,
         one_time_keyboard: true,
@@ -1760,7 +1816,7 @@ export class TelegramUpdate {
     const msg = ctx.message as Message.PhotoMessage;
     const best = msg.photo[msg.photo.length - 1];
 
-    await ctx.reply(`⏳ Uploading receipt…`);
+    await ctx.reply(`Uploading receipt…`);
 
     try {
       const fileLink = await ctx.telegram.getFileLink(best.file_id);
@@ -1768,7 +1824,7 @@ export class TelegramUpdate {
 
       try {
         const res = await fetch(fileLink.href, {
-          headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+          headers: { 'User-Agent': 'MedafSkinCareBot/1.0'},
           signal: AbortSignal.timeout(20_000),
         });
         if (res.ok) {
@@ -1813,15 +1869,15 @@ export class TelegramUpdate {
       const advance = session.advancePaymentAmount ?? total * 0.5;
 
       const v = await this.orderService.verifyEvidence(
-        paymentMethod as 'bank' | 'telebirr',
+        paymentMethod as 'bank'| 'telebirr',
         paymentEvidence,
         advance,
       );
 
       const verifyResult = v.result;
       if (
-        verifyResult.outcome !== 'verified' &&
-        !(verifyResult.outcome === 'queued' && verifyResult.requestId)
+        verifyResult.outcome !== 'verified'&&
+        !(verifyResult.outcome === 'queued'&& verifyResult.requestId)
       ) {
         throw new Error(
           verifyResult.failureReason ||
@@ -1839,7 +1895,7 @@ export class TelegramUpdate {
         deliveryLat: session.deliveryLat ?? null,
         deliveryLon: session.deliveryLon ?? null,
         deliveryDistanceKm: session.deliveryDistanceKm ?? null,
-        status: isVerified ? 'confirmed' : 'payment_submitted',
+        status: isVerified ? 'confirmed': 'payment_submitted',
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
         deliveryFee: session.deliveryFee ?? 0,
@@ -1866,11 +1922,11 @@ export class TelegramUpdate {
           : session.deliveryAddress || 'Your location';
 
       const summary =
-        `${isVerified ? '✅ *Order confirmed*' : '⏳ *Order placed — verifying payment*'}\n\n` +
-        `💵 Prepayment: *${advance.toFixed(2)} ETB*\n` +
-        `📅 Expected: *${expectedDate}*\n` +
-        `📍 ${location}` +
-        (isVerified ? '' : `\n\nWe'll message you when payment is confirmed.`);
+        `${isVerified ? '*Order confirmed*': '*Order placed — verifying payment*'}\n\n`+
+        `Prepayment: *${advance.toFixed(2)} ETB*\n`+
+        `Expected: *${expectedDate}*\n`+
+        `${location}`+
+        (isVerified ? '': `\n\nWe'll message you when payment is confirmed.`);
 
       await ctx.reply(summary, {
         parse_mode: 'Markdown',
@@ -1878,7 +1934,7 @@ export class TelegramUpdate {
           inline_keyboard: [
             [
               {
-                text: '❌ Cancel order',
+                text: 'Cancel order',
                 callback_data: `cancel_order_${order.id}`,
               },
             ],
@@ -1898,8 +1954,8 @@ export class TelegramUpdate {
       let msg = err instanceof Error ? err.message : String(err);
       if (
         err &&
-        typeof err === 'object' &&
-        'getResponse' in err &&
+        typeof err === 'object'&&
+        'getResponse'in err &&
         typeof (err as { getResponse: () => unknown }).getResponse ===
           'function'
       ) {
@@ -1907,11 +1963,11 @@ export class TelegramUpdate {
         if (typeof body === 'string') msg = body;
         else if (
           body &&
-          typeof body === 'object' &&
-          'message' in body
+          typeof body === 'object'&&
+          'message'in body
         ) {
           const m = (body as { message: string | string[] }).message;
-          msg = Array.isArray(m) ? m.join(' ') : String(m);
+          msg = Array.isArray(m) ? m.join('') : String(m);
         }
       }
       this.logger.error(`Failed to create order: ${msg}`);
@@ -1919,7 +1975,7 @@ export class TelegramUpdate {
         /verif|transaction|receipt|screenshot|reference|paid|bank/i.test(msg);
       await ctx.reply(
         isVerifyFail
-          ? `❌ Payment verification failed:\n${msg}\n\nPlease paste the correct transaction ID or send a clearer receipt screenshot.`
+          ? `Payment verification failed:\n${msg}\n\nPlease paste the correct transaction ID or send a clearer receipt screenshot.`
           : `Sorry, we couldn't place your order. Please try again.`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
@@ -1938,11 +1994,11 @@ export class TelegramUpdate {
       Message.ContactMessage &
       Message.LocationMessage,
   ) {
-    const text = ('text' in message ? message.text : '').trim();
+    const text = ('text'in message ? message.text : '').trim();
 
     // ── Step 1: User chooses which field to edit ──
     if (session.step === 'choosing_field') {
-      if (text === '❌ Cancel') {
+      if (this.menuEq(text, 'Cancel')) {
         this.profileEditSessions.delete(chatId);
         await ctx.reply(`Profile edit cancelled.`, {
           reply_markup: this.userKeyboard(ctx.from?.id),
@@ -1950,7 +2006,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text === '📝 Edit Name') {
+      if (this.menuEq(text, 'Edit Name')) {
         session.step = 'awaiting_name';
         session.field = 'name';
         this.profileEditSessions.set(chatId, session);
@@ -1960,7 +2016,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text === '📞 Edit Phone') {
+      if (this.menuEq(text, 'Edit Phone')) {
         session.step = 'awaiting_phone';
         session.field = 'phone';
         this.profileEditSessions.set(chatId, session);
@@ -1971,7 +2027,7 @@ export class TelegramUpdate {
               keyboard: [
                 [
                   {
-                    text: '📱 Share my phone number',
+                    text: 'Share my phone number',
                     request_contact: true,
                   },
                 ],
@@ -1984,7 +2040,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text === '🌿 Edit Skin Type') {
+      if (this.menuEq(text, 'Edit Skin Type')) {
         session.step = 'awaiting_skin_type';
         session.field = 'skinType';
         this.profileEditSessions.set(chatId, session);
@@ -2010,7 +2066,7 @@ export class TelegramUpdate {
         return;
       }
 
-      if (text === '📍 Edit Address') {
+      if (this.menuEq(text, 'Edit Address')) {
         session.step = 'awaiting_address';
         session.field = 'address';
         this.profileEditSessions.set(chatId, session);
@@ -2019,7 +2075,7 @@ export class TelegramUpdate {
           {
             reply_markup: {
               keyboard: [
-                [{ text: '📍 Share Location', request_location: true }],
+                [{ text: 'Share Location', request_location: true }],
               ],
               resize_keyboard: true,
               one_time_keyboard: true,
@@ -2069,7 +2125,7 @@ export class TelegramUpdate {
         fullName: name,
       });
       this.profileEditSessions.delete(chatId);
-      await ctx.reply(`✅ Your name has been updated to: ${name}`, {
+      await ctx.reply(`Your name has been updated to: ${name}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
     } catch (err) {
@@ -2090,9 +2146,9 @@ export class TelegramUpdate {
   ) {
     let phone: string | undefined;
 
-    if ('contact' in message && message.contact?.phone_number) {
+    if ('contact'in message && message.contact?.phone_number) {
       phone = message.contact.phone_number;
-    } else if ('text' in message && message.text) {
+    } else if ('text'in message && message.text) {
       phone = message.text.trim();
     }
 
@@ -2104,7 +2160,7 @@ export class TelegramUpdate {
     try {
       await this.customerService.update(session.customerId, { phone });
       this.profileEditSessions.delete(chatId);
-      await ctx.reply(`✅ Your phone has been updated to: ${phone}`, {
+      await ctx.reply(`Your phone has been updated to: ${phone}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
     } catch (err) {
@@ -2140,7 +2196,7 @@ export class TelegramUpdate {
       });
       this.profileEditSessions.delete(chatId);
       const displayName = match ? match.name : 'Not specified';
-      await ctx.reply(`✅ Your skin type has been updated to: ${displayName}`, {
+      await ctx.reply(`Your skin type has been updated to: ${displayName}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
     } catch (err) {
@@ -2163,11 +2219,11 @@ export class TelegramUpdate {
     let lat: number | undefined;
     let lon: number | undefined;
 
-    if ('location' in message && message.location) {
+    if ('location'in message && message.location) {
       lat = message.location.latitude;
       lon = message.location.longitude;
       address = `GPS Location: ${lat}, ${lon}`;
-    } else if ('text' in message && message.text) {
+    } else if ('text'in message && message.text) {
       address = message.text.trim();
     }
 
@@ -2185,7 +2241,7 @@ export class TelegramUpdate {
         locationLon: lon ?? null,
       });
       this.profileEditSessions.delete(chatId);
-      await ctx.reply(`✅ Your address has been updated to: ${address}`, {
+      await ctx.reply(`Your address has been updated to: ${address}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
       });
     } catch (err) {
@@ -2211,14 +2267,14 @@ export class TelegramUpdate {
 
     if (input !== correctPassword) {
       await ctx.reply(
-        `❌ Incorrect password. Try again or send /admin to start over.`,
+        `Incorrect password. Try again or send /admin to start over.`,
       );
       return;
     }
 
-    this.adminSessions.set(chatId, { step: 'authenticated' });
+    this.adminSessions.set(chatId, { step: 'authenticated'});
     this.logger.log(`Admin authenticated for chatId=${chatId}`);
-    await this.sendAdminMenu(ctx, `✅ Access granted. Welcome, Admin!`);
+    await this.sendAdminMenu(ctx, `Access granted. Welcome, Admin!`);
   }
 
   private async sendAdminMenu(ctx: Context, headerText: string) {
@@ -2236,39 +2292,39 @@ export class TelegramUpdate {
     text: string,
   ) {
     switch (text) {
-      case '🌐 Web Catalog':
+      case 'Web Catalog':
         await ctx.reply(
-          `🌐 Web Catalog\n\nManage your product catalogue via the web admin panel:\n` +
+          `Web Catalog\n\nManage your product catalogue via the web admin panel:\n`+
             `https://skin-care-frontend-ecru.vercel.app/admin/products`,
           { reply_markup: this.adminKeyboard(ctx.from?.id) },
         );
         break;
 
-      case '👥 Customers':
+      case 'Customers':
         await this.handleCustomersAction(ctx);
         break;
 
-      case '🛒 Orders':
+      case 'Orders':
         await ctx.reply(
-          `🛒 Orders\n\nView and manage orders in the web admin panel:\n` +
+          `Orders\n\nView and manage orders in the web admin panel:\n`+
             `https://skin-care-frontend-ecru.vercel.app/admin/orders`,
           { reply_markup: this.adminKeyboard(ctx.from?.id) },
         );
         break;
 
-      case '⚙️ Settings':
+      case 'Settings':
         await ctx.reply(
-          `⚙️ Settings\n\nManage your store settings via the web admin panel:\n` +
+          `Settings\n\nManage your store settings via the web admin panel:\n`+
             `https://skin-care-frontend-ecru.vercel.app/admin/settings`,
           { reply_markup: this.adminKeyboard(ctx.from?.id) },
         );
         break;
 
-      case '🚪 Logout':
+      case 'Logout':
         this.adminSessions.delete(chatId);
         this.catalogSessions.delete(chatId);
         this.scanSessions.delete(chatId);
-        await ctx.reply(`👋 You have been logged out of admin mode.`, {
+        await ctx.reply(`You have been logged out of admin mode.`, {
           reply_markup: this.userKeyboard(ctx.from?.id),
         });
         break;
@@ -2286,7 +2342,7 @@ export class TelegramUpdate {
     });
 
     if (total === 0) {
-      await ctx.reply(`👥 No registered customers yet.`, {
+      await ctx.reply(`No registered customers yet.`, {
         reply_markup: this.adminKeyboard(ctx.from?.id),
       });
       return;
@@ -2297,10 +2353,10 @@ export class TelegramUpdate {
       .join('\n');
 
     const note =
-      total > items.length ? `\n\n...and ${total - items.length} more.` : '';
+      total > items.length ? `\n\n...and ${total - items.length} more.`: '';
 
     await ctx.reply(
-      `👥 Registered Customers (${total} total)\n\n${summary}${note}`,
+      `Registered Customers (${total} total)\n\n${summary}${note}`,
       { reply_markup: this.adminKeyboard(ctx.from?.id) },
     );
   }
@@ -2330,11 +2386,11 @@ export class TelegramUpdate {
     const knownUsername = ctx.from?.username?.trim();
     if (knownUsername) {
       await ctx.reply(
-        `Great, ${name}! 👍\n\nPlease share your Telegram username.\n` +
+        `Great, ${name}! \n\nPlease share your Telegram username.\n`+
           `We detected @${knownUsername} — tap the button below to use it, or type a different one.`,
         {
           reply_markup: {
-            keyboard: [[{ text: `@${knownUsername}` }], [{ text: 'Skip' }]],
+            keyboard: [[{ text: `@${knownUsername}`}], [{ text: 'Skip'}]],
             resize_keyboard: true,
             one_time_keyboard: true,
           },
@@ -2344,11 +2400,11 @@ export class TelegramUpdate {
     }
 
     await ctx.reply(
-      `Great, ${name}! 👍\n\nPlease share your Telegram username (e.g. @yourname).\n` +
+      `Great, ${name}! \n\nPlease share your Telegram username (e.g. @yourname).\n`+
         `Type it below, or tap Skip if you don't have one.`,
       {
         reply_markup: {
-          keyboard: [[{ text: 'Skip' }]],
+          keyboard: [[{ text: 'Skip'}]],
           resize_keyboard: true,
           one_time_keyboard: true,
         },
@@ -2365,7 +2421,7 @@ export class TelegramUpdate {
     const raw = message.text?.trim() ?? '';
     const lower = raw.toLowerCase();
 
-    if (lower === 'skip' || lower === 'skip for now') {
+    if (lower === 'skip'|| lower === 'skip for now') {
       session.telegramUsername = null;
     } else {
       const cleaned = raw.replace(/^@/, '').trim();
@@ -2382,12 +2438,12 @@ export class TelegramUpdate {
     this.sessions.set(chatId, session);
 
     await ctx.reply(
-      `Thanks! 🙌\n\nNow please share your phone number | ስልኮን ያጋሩን.\n` +
+      `Thanks! \n\nNow please share your phone number | ስልኮን ያጋሩን.\n`+
         `You can tap the button below or type it manually.`,
       {
         reply_markup: {
           keyboard: [
-            [{ text: '📱 Share my phone number | ያጋሩ', request_contact: true }],
+            [{ text: 'Share my phone number | ያጋሩ', request_contact: true }],
           ],
           resize_keyboard: true,
           one_time_keyboard: true,
@@ -2404,9 +2460,9 @@ export class TelegramUpdate {
   ) {
     let phone: string | undefined;
 
-    if ('contact' in message && message.contact?.phone_number) {
+    if ('contact'in message && message.contact?.phone_number) {
       phone = message.contact.phone_number;
-    } else if ('text' in message && message.text) {
+    } else if ('text'in message && message.text) {
       phone = message.text.trim();
     }
 
@@ -2429,10 +2485,10 @@ export class TelegramUpdate {
       this.sessions.set(chatId, session);
 
       await ctx.reply(
-        `Got it! 📞\n\nFinally, what is your delivery location? Send us your GPS location or type your address.`,
+        `Got it! \n\nFinally, what is your delivery location? Send us your GPS location or type your address.`,
         {
           reply_markup: {
-            keyboard: [[{ text: '📍 Share Location', request_location: true }]],
+            keyboard: [[{ text: 'Share Location', request_location: true }]],
             resize_keyboard: true,
             one_time_keyboard: true,
           },
@@ -2444,7 +2500,7 @@ export class TelegramUpdate {
     const keyboard = skinTypes.map((st) => [{ text: st.name }]);
 
     await ctx.reply(
-      `Perfect! 📞\n\nWhat is your skin type? Choose from the options below:`,
+      `Perfect! \n\nWhat is your skin type? Choose from the options below:`,
       {
         reply_markup: {
           keyboard,
@@ -2477,11 +2533,11 @@ export class TelegramUpdate {
     this.sessions.set(chatId, session);
 
     await ctx.reply(
-      `Got it — ${match ? match.name : input} skin! 🌿\n\n` +
+      `Got it — ${match ? match.name : input} skin! \n\n`+
         `Almost done! What is your delivery location? Send us your GPS location or type your address.`,
       {
         reply_markup: {
-          keyboard: [[{ text: '📍 Share Location', request_location: true }]],
+          keyboard: [[{ text: 'Share Location', request_location: true }]],
           resize_keyboard: true,
           one_time_keyboard: true,
         },
@@ -2499,11 +2555,11 @@ export class TelegramUpdate {
     let lat: number | undefined;
     let lon: number | undefined;
 
-    if ('location' in message && message.location) {
+    if ('location'in message && message.location) {
       lat = message.location.latitude;
       lon = message.location.longitude;
       address = `GPS Location: ${lat}, ${lon}`; // Or reverse geocode if desired
-    } else if ('text' in message && message.text) {
+    } else if ('text'in message && message.text) {
       address = message.text.trim();
     }
 
@@ -2536,19 +2592,19 @@ export class TelegramUpdate {
       this.sessions.delete(chatId);
 
       const usernameLine = session.telegramUsername
-        ? `🔗 Username: @${session.telegramUsername}\n`
+        ? `Username: @${session.telegramUsername}\n`
         : '';
 
       await ctx.reply(
-        `You are all set, ${session.fullName}! 🎉\n\n` +
-          `Here is a summary of your registration:\n\n` +
-          `👤 Name: ${session.fullName}\n` +
+        `You are all set, ${session.fullName}! \n\n`+
+          `Here is a summary of your registration:\n\n`+
+          `Name: ${session.fullName}\n`+
           usernameLine +
-          `📞 Phone: ${session.phone}\n` +
-          `🌿 Skin type: ${session.skinTypeId ? 'Saved' : 'Not specified'}\n` +
-          `📍 Address: ${address}\n\n` +
-          `Welcome to the Medaf Skin Care family! We will keep you updated on ` +
-          `new arrivals, offers, and skincare tips. 😊`,
+          `Phone: ${session.phone}\n`+
+          `Skin type: ${session.skinTypeId ? 'Saved': 'Not specified'}\n`+
+          `Address: ${address}\n\n`+
+          `Welcome to the Medaf Skin Care family! We will keep you updated on `+
+          `new arrivals, offers, and skincare tips. `,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
     } catch (err) {
@@ -2556,7 +2612,7 @@ export class TelegramUpdate {
       this.logger.error(`Failed to save customer chatId=${chatId}: ${msg}`);
 
       await ctx.reply(
-        `Sorry, something went wrong while saving your details. ` +
+        `Sorry, something went wrong while saving your details. `+
           `Please try again by sending /start.`,
         { reply_markup: { remove_keyboard: true } },
       );

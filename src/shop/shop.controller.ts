@@ -325,19 +325,41 @@ export class ShopController {
 
   @UseGuards(CustomerJwtAuthGuard)
   @Get('delivery-fee')
-  getDeliveryFee(@Query('lat') lat?: string, @Query('lon') lon?: string) {
+  async getDeliveryFee(
+    @Query('lat') lat?: string,
+    @Query('lon') lon?: string,
+  ) {
+    const origin = await this.settingsService.getDeliveryOrigin();
+    const notes = {
+      originDescription: origin.description?.trim() || null,
+      originAddress: origin.displayAddress || null,
+    };
     if (lat && lon) {
-      return this.locationIqService.calculateDeliveryFee(
+      const fee = await this.locationIqService.calculateDeliveryFee(
         parseFloat(lat),
         parseFloat(lon),
       );
+      return { ...fee, ...notes };
     }
     return {
       distanceKm: 0,
-      fee: 350,
+      fee: 0,
       durationMinutes: 0,
-      withinRadius: true,
+      withinRadius: false,
       bandLabel: null,
+      ...notes,
+    };
+  }
+
+  @UseGuards(CustomerJwtAuthGuard)
+  @Get('delivery-info')
+  async getDeliveryInfo() {
+    const origin = await this.settingsService.getDeliveryOrigin();
+    return {
+      displayAddress: origin.displayAddress,
+      description: origin.description?.trim() || null,
+      lat: origin.lat,
+      lon: origin.lon,
     };
   }
 
