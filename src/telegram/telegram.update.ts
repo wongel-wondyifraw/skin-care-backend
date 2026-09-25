@@ -1754,20 +1754,24 @@ export class TelegramUpdate {
       );
 
       const verifyResult = v.result;
-      if (verifyResult.outcome !== 'verified') {
+      if (
+        verifyResult.outcome !== 'verified' &&
+        !(verifyResult.outcome === 'queued' && verifyResult.requestId)
+      ) {
         throw new Error(
           verifyResult.failureReason ||
             `Payment could not be verified (${verifyResult.outcome})`,
         );
       }
 
+      const isVerified = verifyResult.outcome === 'verified';
       const order = await this.orderService.create({
         customerId: session.customerId,
         productId: session.productId,
         cost: session.cost,
         quantity,
         deliveryAddress: session.deliveryAddress ?? null,
-        status: 'confirmed',
+        status: isVerified ? 'confirmed' : 'payment_submitted',
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
         deliveryFee: session.deliveryFee ?? 0,
@@ -1776,7 +1780,7 @@ export class TelegramUpdate {
         paymentMethod,
         paymentEvidence: v.extractedTxId,
         paymentSubmittedAt: new Date(),
-        paymentVerifiedAt: new Date(),
+        paymentVerifiedAt: isVerified ? new Date() : null,
         verifyEtRequestId: verifyResult.requestId ?? null,
         verifyEtStatus: verifyResult.outcome,
         verifyEtRawResponse:
@@ -1789,32 +1793,62 @@ export class TelegramUpdate {
         day: 'numeric',
       });
 
-      await ctx.reply(
-        `✅ *Order Confirmed — Payment Verified!*\n\n` +
-          `🌿 *${session.productName}* × ${quantity}\n` +
-          `💰 *Total:* ${total.toFixed(2)} ETB\n` +
-          `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Verified)\n` +
-          `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
-          `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
-          (session.fulfilmentType === 'pickup'
-            ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
-            : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
-          `Your payment was verified automatically. We are preparing your order! 🌿\n\n` +
-          `📞 *Need help? Contact us:* ${supportPhone}`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [
-                {
-                  text: '❌ Cancel order',
-                  callback_data: `cancel_order_${order.id}`,
-                },
+      if (isVerified) {
+        await ctx.reply(
+          `✅ *Order Confirmed — Payment Verified!*\n\n` +
+            `🌿 *${session.productName}* × ${quantity}\n` +
+            `💰 *Total:* ${total.toFixed(2)} ETB\n` +
+            `💵 *50% Advance:* ${advance.toFixed(2)} ETB (Verified)\n` +
+            `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
+            `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
+            (session.fulfilmentType === 'pickup'
+              ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
+              : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
+            `Your payment was verified automatically. We are preparing your order! 🌿\n\n` +
+            `📞 *Need help? Contact us:* ${supportPhone}`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: '❌ Cancel order',
+                    callback_data: `cancel_order_${order.id}`,
+                  },
+                ],
               ],
-            ],
+            },
           },
-        },
-      );
+        );
+      } else {
+        await ctx.reply(
+          `⏳ *Order received — verifying payment…*\n\n` +
+            `🌿 *${session.productName}* × ${quantity}\n` +
+            `💰 *Total:* ${total.toFixed(2)} ETB\n` +
+            `💵 *50% Advance:* ${advance.toFixed(2)} ETB\n` +
+            `💵 *Remaining on Delivery:* ${remaining.toFixed(2)} ETB\n` +
+            `📅 *Expected ${session.fulfilmentType === 'pickup' ? 'Ready' : 'Delivery'}:* ${expectedDate}\n` +
+            (session.fulfilmentType === 'pickup'
+              ? `🏢 *Pickup Location:* ${session.pickupLocationName || 'Medaf Store'}\n\n`
+              : `📍 *Delivery Address:* ${session.deliveryAddress}\n\n`) +
+            `We're confirming your payment with the bank. You'll get a Telegram message once it's verified. 🌿\n\n` +
+            `📞 *Need help? Contact us:* ${supportPhone}`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: '❌ Cancel order',
+                    callback_data: `cancel_order_${order.id}`,
+                  },
+                ],
+              ],
+            },
+          },
+        );
+        this.orderService.scheduleFinishQueuedVerification([order], advance);
+      }
 
       await ctx.reply(`Use the menu below anytime:`, {
         reply_markup: this.userKeyboard(ctx.from?.id),

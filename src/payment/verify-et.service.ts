@@ -29,8 +29,10 @@ export interface VerifyEtResult {
   failureReason?: string;
 }
 
-const SYNC_WAIT_MS = 20_000;
-const POLL_MAX_ATTEMPTS = 20;
+const SYNC_WAIT_MS = 8_000;
+/** Short poll only when no webhook is configured */
+const POLL_MAX_ATTEMPTS_INLINE = 4;
+const POLL_MAX_ATTEMPTS_BACKGROUND = 40;
 const POLL_DEFAULT_INTERVAL_MS = 1_500;
 
 @Injectable()
@@ -126,10 +128,10 @@ export class VerifyEtService {
       const requestId =
         typeof json.requestId === 'string' ? json.requestId : undefined;
 
-      // 202 Queued — poll until terminal or timeout
+      // 202 Queued — return fast when webhook can finish later; else short poll
       if (res.status === 202) {
         this.logger.log(
-          `Verify.ET queued: requestId=${requestId ?? 'unknown'} — polling`,
+          `Verify.ET queued: requestId=${requestId ?? 'unknown'}`,
         );
         if (!requestId) {
           return {
@@ -139,7 +141,24 @@ export class VerifyEtService {
               'Verification queued but no requestId returned. Please try again.',
           };
         }
-        return this.pollUntilDone(requestId, request.expectedAmount, json);
+
+        if (this.webhookUrl) {
+          // Checkout returns immediately; webhook + background poll finish it
+          return {
+            outcome: 'queued',
+            requestId,
+            rawResponse: json,
+            failureReason:
+              'Payment is being verified with the bank. This usually takes a few seconds.',
+          };
+        }
+
+        return this.pollUntilDone(
+          requestId,
+          request.expectedAmount,
+          json,
+          POLL_MAX_ATTEMPTS_INLINE,
+        );
       }
 
       if (!res.ok) {
@@ -171,10 +190,11 @@ export class VerifyEtService {
     requestId: string,
     expectedAmount: number,
     initialRaw?: Record<string, unknown>,
+    maxAttempts: number = POLL_MAX_ATTEMPTS_BACKGROUND,
   ): Promise<VerifyEtResult> {
     let pollAfterMs = POLL_DEFAULT_INTERVAL_MS;
 
-    for (let attempt = 0; attempt < POLL_MAX_ATTEMPTS; attempt += 1) {
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       await this.sleep(pollAfterMs);
 
       try {
@@ -207,7 +227,6 @@ export class VerifyEtService {
         }
 
         if (processingStatus === 'completed' || data?.verified === true) {
-          // Normalize so parseCompletedResponse can read amount / settlement
           const envelope = Array.isArray(json.data)
             ? json
             : { ...json, data: data ? [data] : [], requestId };

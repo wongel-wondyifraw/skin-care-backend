@@ -195,7 +195,7 @@ export class OrderService {
     const grandTotal = subtotal + deliveryFee;
     const totalAdvance = Math.round(grandTotal * 0.5 * 100) / 100;
 
-    // Checkout with payment evidence: order is created ONLY after Verify.ET confirms.
+    // Verify payment: fast path = verified now; else queue + webhook/background
     let verifyResult: Awaited<
       ReturnType<OrderService['verifyEvidence']>
     >['result'] | null = null;
@@ -215,12 +215,15 @@ export class OrderService {
       );
       verifyResult = v.result;
       extractedTxId = v.extractedTxId;
-      this.assertPaymentVerified(verifyResult);
+      this.assertPaymentAcceptable(verifyResult);
     }
 
-    const initialStatus: OrderStatus = verifyResult
-      ? 'confirmed'
-      : 'awaiting_payment';
+    const initialStatus: OrderStatus =
+      verifyResult?.outcome === 'verified'
+        ? 'confirmed'
+        : verifyResult?.outcome === 'queued'
+          ? 'payment_submitted'
+          : 'awaiting_payment';
 
     const created: Order[] = [];
     for (let i = 0; i < productInfos.length; i++) {
@@ -248,10 +251,10 @@ export class OrderService {
         expectedDeliveryDate: tomorrow,
         advancePaymentAmount: lineAdvance,
         paymentMethod: opts.paymentMethod ?? null,
-        // Persist cleaned TX (never a screenshot URL) for reliable re-verify
         paymentEvidence: extractedTxId ?? opts.paymentEvidence ?? null,
         paymentSubmittedAt: verifyResult ? new Date() : null,
-        paymentVerifiedAt: verifyResult ? new Date() : null,
+        paymentVerifiedAt:
+          verifyResult?.outcome === 'verified' ? new Date() : null,
         verifyEtRequestId: verifyResult?.requestId ?? null,
         verifyEtStatus: verifyResult?.outcome ?? null,
         verifyEtRawResponse: verifyResult?.rawResponse ?? null,
@@ -265,6 +268,10 @@ export class OrderService {
         void this.notifyCustomerPaymentVerified(order);
         void this.notifyAdminsPaymentVerified(order);
       }
+    } else if (initialStatus === 'payment_submitted') {
+      void this.notifyAdminsPaymentSubmitted(created[0]);
+      // Webhook + background poll will confirm (or fail) without blocking checkout
+      void this.finishQueuedVerification(created, totalAdvance);
     } else {
       void this.notifyCustomerShopOrdersPlaced(
         created,
@@ -401,7 +408,7 @@ export class OrderService {
       order.id,
     );
 
-    this.assertPaymentVerified(v.result);
+    this.assertPaymentAcceptable(v.result);
 
     order.paymentMethod = evidence.paymentMethod;
     order.paymentEvidence = v.extractedTxId;
@@ -410,14 +417,28 @@ export class OrderService {
     order.verifyEtStatus = v.result.outcome;
     order.verifyEtRawResponse =
       (v.result.rawResponse as Record<string, unknown>) ?? null;
-    order.status = 'confirmed';
-    order.paymentVerifiedAt = new Date();
+
+    if (v.result.outcome === 'verified') {
+      order.status = 'confirmed';
+      order.paymentVerifiedAt = new Date();
+    } else {
+      order.status = 'payment_submitted';
+    }
 
     await this.orderRepository.save(order);
 
     const updated = await this.findOne(order.id);
-    void this.notifyCustomerPaymentVerified(updated);
-    void this.notifyAdminsPaymentVerified(updated);
+
+    if (updated.status === 'confirmed') {
+      void this.notifyCustomerPaymentVerified(updated);
+      void this.notifyAdminsPaymentVerified(updated);
+    } else {
+      void this.notifyAdminsPaymentSubmitted(updated);
+      void this.finishQueuedVerification(
+        [updated],
+        Number(updated.advancePaymentAmount) || 0,
+      );
+    }
 
     return updated;
   }
@@ -571,21 +592,84 @@ export class OrderService {
     }
   }
 
-  /** Reject checkout unless Verify.ET outcome is verified */
-  private assertPaymentVerified(result: {
+  /** Reject hard failures; allow verified (done) or queued (webhook/background). */
+  private assertPaymentAcceptable(result: {
     outcome: string;
     failureReason?: string;
+    requestId?: string;
   }): void {
     if (result.outcome === 'verified') return;
+    if (result.outcome === 'queued' && result.requestId) return;
+
     const friendly: Record<string, string> = {
       duplicate:
         'This transaction was already used for another order. Each payment can only confirm one order.',
+      queued:
+        'Payment verification is still pending. Please try again in a moment.',
     };
     throw new BadRequestException(
       friendly[result.outcome] ||
         result.failureReason ||
         `Payment could not be verified (${result.outcome}). Check the transaction ID and try again.`,
     );
+  }
+
+  /**
+   * After checkout returns queued: keep polling Verify.ET in the background
+   * so confirmation still happens if the webhook is delayed or missing.
+   */
+  scheduleFinishQueuedVerification(
+    orders: Order[],
+    expectedAmount: number,
+  ): void {
+    void this.finishQueuedVerification(orders, expectedAmount);
+  }
+
+  private async finishQueuedVerification(
+    orders: Order[],
+    expectedAmount: number,
+  ): Promise<void> {
+    const requestId = orders[0]?.verifyEtRequestId;
+    if (!requestId) return;
+
+    try {
+      const result = await this.verifyEtService.pollUntilDone(
+        requestId,
+        expectedAmount,
+      );
+
+      for (const stub of orders) {
+        const order = await this.findOne(stub.id);
+        if (order.status === 'confirmed' || order.status === 'cancelled') {
+          continue;
+        }
+
+        order.verifyEtStatus = result.outcome;
+        order.verifyEtRawResponse =
+          (result.rawResponse as Record<string, unknown>) ?? null;
+        await this.orderRepository.save(order);
+
+        if (
+          result.outcome === 'verified' &&
+          (order.status === 'payment_submitted' ||
+            order.status === 'awaiting_payment')
+        ) {
+          await this.updateStatus(order.id, 'confirmed');
+        } else if (result.outcome !== 'queued') {
+          await this.notificationService.create({
+            type: 'payment_submitted',
+            title: 'Auto-verification failed',
+            body: `${order.customer?.fullName ?? 'Customer'} · ${order.product?.name ?? 'Product'} — ${result.failureReason || result.outcome}.`,
+            orderId: order.id,
+            href: '/admin/orders',
+          });
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Background verification for ${requestId} ended with error: ${err}`,
+      );
+    }
   }
 
   private normalizeTxId(
