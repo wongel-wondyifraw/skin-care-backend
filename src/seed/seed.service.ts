@@ -3,7 +3,6 @@ import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
 import { AdminUserService } from '../admin-user/admin-user.service.js';
 import { SkinTypeService } from '../skin-type/skin-type.service.js';
-import { PickupLocationService } from '../pickup-location/pickup-location.service.js';
 import { SettingsService } from '../settings/settings.service.js';
 
 @Injectable()
@@ -13,7 +12,6 @@ export class SeedService implements OnApplicationBootstrap {
   constructor(
     private readonly adminUserService: AdminUserService,
     private readonly skinTypeService: SkinTypeService,
-    private readonly pickupLocationService: PickupLocationService,
     private readonly settingsService: SettingsService,
     private readonly configService: ConfigService,
   ) {}
@@ -21,7 +19,6 @@ export class SeedService implements OnApplicationBootstrap {
   async onApplicationBootstrap(): Promise<void> {
     await this.seedAdmin();
     await this.seedSkinTypes();
-    await this.seedPickupLocations();
     await this.seedDeliveryRate();
     await this.seedPaymentInfo();
     await this.seedSupportPhone();
@@ -64,27 +61,6 @@ export class SeedService implements OnApplicationBootstrap {
       }
     } catch (err) {
       this.logger.error('Failed to seed Acne-Prone Skin', err);
-    }
-  }
-
-  private async seedPickupLocations(): Promise<void> {
-    try {
-      const existing = await this.pickupLocationService.findAll();
-      if (existing.length === 0) {
-        await this.pickupLocationService.create({
-          name: 'Medaf HQ — Bole',
-          address: 'Bole Road, Near Edna Mall, Addis Ababa',
-          enabled: true,
-        });
-        await this.pickupLocationService.create({
-          name: 'Medaf Branch — Kazanchis',
-          address: 'Kazanchis, Near Hilton, Addis Ababa',
-          enabled: true,
-        });
-        this.logger.log('Seeded initial pickup locations');
-      }
-    } catch (err) {
-      this.logger.error('Failed to seed pickup locations', err);
     }
   }
 

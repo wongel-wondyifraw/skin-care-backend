@@ -1,15 +1,12 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { PickupLocation } from './pickup-location.entity.js';
 
 export type PickupLocationInput = {
   name: string;
-  address: string;
   description?: string | null;
   enabled?: boolean;
-  lat?: number | null;
-  lon?: number | null;
 };
 
 @Injectable()
@@ -37,16 +34,24 @@ export class PickupLocationService {
   }
 
   async create(data: PickupLocationInput): Promise<PickupLocation> {
+    const name = data.name?.trim();
+    const description =
+      data.description != null && String(data.description).trim()
+        ? String(data.description).trim()
+        : null;
+    if (!name) {
+      throw new BadRequestException('Name is required');
+    }
+    if (!description) {
+      throw new BadRequestException('Description is required');
+    }
     const loc = this.repo.create({
-      name: data.name.trim(),
-      address: data.address.trim(),
-      description:
-        data.description != null && String(data.description).trim()
-          ? String(data.description).trim()
-          : null,
+      name,
+      description,
+      address: '',
+      lat: null,
+      lon: null,
       enabled: data.enabled ?? true,
-      lat: data.lat != null ? Number(data.lat) : null,
-      lon: data.lon != null ? Number(data.lon) : null,
     });
     return this.repo.save(loc);
   }
@@ -56,21 +61,26 @@ export class PickupLocationService {
     data: Partial<PickupLocationInput>,
   ): Promise<PickupLocation> {
     const loc = await this.findOne(id);
-    if (data.name !== undefined) loc.name = data.name.trim();
-    if (data.address !== undefined) loc.address = data.address.trim();
+    if (data.name !== undefined) {
+      const name = data.name.trim();
+      if (!name) throw new BadRequestException('Name is required');
+      loc.name = name;
+    }
     if (data.description !== undefined) {
-      loc.description =
+      const description =
         data.description != null && String(data.description).trim()
           ? String(data.description).trim()
           : null;
+      if (!description) {
+        throw new BadRequestException('Description is required');
+      }
+      loc.description = description;
     }
     if (data.enabled !== undefined) loc.enabled = data.enabled;
-    if (data.lat !== undefined) {
-      loc.lat = data.lat != null ? Number(data.lat) : null;
-    }
-    if (data.lon !== undefined) {
-      loc.lon = data.lon != null ? Number(data.lon) : null;
-    }
+    // Clear map fields — pickups are text-only
+    loc.lat = null;
+    loc.lon = null;
+    if (loc.address == null) loc.address = '';
     return this.repo.save(loc);
   }
 

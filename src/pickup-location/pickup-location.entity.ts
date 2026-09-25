@@ -14,12 +14,16 @@ export class PickupLocation {
   @Column({ length: 200 })
   name: string;
 
-  @Column({ type: 'text' })
-  address: string;
-
-  /** Shown to customers for finding the store (landmarks, hours, entrance notes). */
+  /** Text notes for customers (address landmarks, hours, how to find). */
   @Column({ type: 'text', nullable: true })
   description: string | null;
+
+  /**
+   * Legacy optional field — kept nullable for existing rows.
+   * New pickups use name + description only.
+   */
+  @Column({ type: 'text', nullable: true, default: '' })
+  address: string | null;
 
   @Column({ type: 'decimal', precision: 10, scale: 7, nullable: true })
   lat: number | null;

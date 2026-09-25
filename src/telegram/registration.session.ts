@@ -149,6 +149,8 @@ export interface OrderSession {
   advancePaymentAmount?: number;
   totalCost?: number;
   paymentMethod?: string;
+  /** Receipt photo URL waiting for user confirm / remove */
+  pendingPaymentPhotoUrl?: string;
 }
 
 export class OrderSessionStore {

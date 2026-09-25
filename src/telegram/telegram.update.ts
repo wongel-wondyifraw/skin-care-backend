@@ -1510,13 +1510,9 @@ export class TelegramUpdate {
 
         let locText = `*Select a pickup location:*\n\n`;
         locations.forEach((l, idx) => {
-          locText += `${idx + 1}. *${l.name}*\n${l.address}`;
-          if (l.description?.trim()) {
-            locText += `\n${l.description.trim()}`;
-          }
-          locText += `\n\n`;
+          locText += `${idx + 1}. *${l.name}*\n`;
         });
-        locText += `Tap a location below:`;
+        locText += `\nTap a location below:`;
 
         await ctx.reply(locText, {
           parse_mode: 'Markdown',
@@ -1631,8 +1627,7 @@ export class TelegramUpdate {
 
         const desc = found.description?.trim();
         await ctx.reply(
-          `*${found.name}*\n${found.address}` +
-            (desc ? `\n\n${desc}` : ''),
+          `*${found.name}*` + (desc ? `\n\n${desc}` : ''),
           { parse_mode: 'Markdown' },
         );
 
@@ -1649,16 +1644,38 @@ export class TelegramUpdate {
       if (text.includes('CBE') || text.includes('Bank')) {
         session.paymentMethod = 'bank';
         session.step = 'awaiting_payment_evidence';
+        session.pendingPaymentPhotoUrl = undefined;
         await ctx.reply(
-          'Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
-          { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
+          'Please send a *screenshot of your payment receipt*, or reply with your *transaction number*.\n\n' +
+            'You can tap *Remove screenshot* after sending a photo if you need to change it.',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
         );
       } else if (text.includes('Telebirr')) {
         session.paymentMethod = 'telebirr';
         session.step = 'awaiting_payment_evidence';
+        session.pendingPaymentPhotoUrl = undefined;
         await ctx.reply(
-          'Please send a *screenshot of your payment receipt*, or reply with your *transaction reference number / SMS text*.',
-          { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } },
+          'Please send a *screenshot of your payment receipt*, or reply with your *transaction number*.\n\n' +
+            'You can tap *Remove screenshot* after sending a photo if you need to change it.',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
         );
       } else {
         await ctx.reply('Please choose how you paid using the buttons below.');
@@ -1668,8 +1685,35 @@ export class TelegramUpdate {
 
     // ── Step 4: Payment evidence (text message) ──
     if (session.step === 'awaiting_payment_evidence') {
+      if (this.menuEq(text, 'Remove screenshot') || /^remove/i.test(text)) {
+        session.pendingPaymentPhotoUrl = undefined;
+        this.orderSessions.set(chatId, session);
+        await ctx.reply(
+          'Screenshot cleared. Send a new photo or type your *transaction number*.',
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                [{ text: 'Remove screenshot' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
+
+      if (this.menuEq(text, 'Confirm payment') && session.pendingPaymentPhotoUrl) {
+        const method = session.paymentMethod ?? 'telebirr';
+        const evidence = session.pendingPaymentPhotoUrl;
+        session.pendingPaymentPhotoUrl = undefined;
+        await this.completeBotOrder(ctx, chatId, session, evidence, method);
+        return;
+      }
+
       const evidence = text.trim();
-      const method = session.paymentMethod ?? 'telebirr'; // fallback
+      const method = session.paymentMethod ?? 'telebirr';
       await this.completeBotOrder(ctx, chatId, session, evidence, method);
       return;
     }
@@ -1827,12 +1871,29 @@ export class TelegramUpdate {
       }
 
       const method = session.paymentMethod ?? 'bank';
-      await this.completeBotOrder(ctx, chatId, session, photoUrl, method);
+      session.pendingPaymentPhotoUrl = photoUrl;
+      this.orderSessions.set(chatId, session);
+
+      await ctx.reply(
+        `Screenshot received for *${method === 'telebirr' ? 'Telebirr' : 'CBE'}*.\n\n` +
+          `Tap *Confirm payment* to continue, or *Remove screenshot* to send a different one / type your transaction number.`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              [{ text: 'Confirm payment' }],
+              [{ text: 'Remove screenshot' }],
+              [{ text: 'Cancel order' }],
+            ],
+            resize_keyboard: true,
+          },
+        },
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.error(`Failed to process payment photo: ${message}`);
       await ctx.reply(
-        `Failed to process photo. Please type your transaction reference number instead:`,
+        `Failed to process photo. Please type your transaction number instead:`,
       );
     }
   }
