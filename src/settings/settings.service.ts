@@ -95,10 +95,38 @@ const DEFAULT_DELIVERY_RATE: DeliveryRate = {
 
 @Injectable()
 export class SettingsService {
+  /** Short TTL cache for hot shop/settings reads (invalidated on write). */
+  private readonly cache = new Map<
+    string,
+    { expiresAt: number; value: unknown }
+  >();
+  private readonly cacheTtlMs = 30_000;
+
   constructor(
     @InjectRepository(Setting)
     private readonly settingRepository: Repository<Setting>,
   ) {}
+
+  private cacheGet<T>(key: string): T | undefined {
+    const hit = this.cache.get(key);
+    if (!hit) return undefined;
+    if (hit.expiresAt <= Date.now()) {
+      this.cache.delete(key);
+      return undefined;
+    }
+    return hit.value as T;
+  }
+
+  private cacheSet(key: string, value: unknown): void {
+    this.cache.set(key, {
+      expiresAt: Date.now() + this.cacheTtlMs,
+      value,
+    });
+  }
+
+  private cacheInvalidate(key: string): void {
+    this.cache.delete(key);
+  }
 
   async getValue(key: string): Promise<string | null> {
     const row = await this.settingRepository.findOne({ where: { key } });
@@ -113,18 +141,31 @@ export class SettingsService {
     } else {
       await this.settingRepository.save({ key, value });
     }
+    this.cacheInvalidate(key);
   }
 
   async getTrendingProductIds(): Promise<string[]> {
+    const cached = this.cacheGet<string[]>(SHOP_TRENDING_KEY);
+    if (cached) return cached;
+
     const raw = await this.getValue(SHOP_TRENDING_KEY);
-    if (!raw) return [];
+    if (!raw) {
+      this.cacheSet(SHOP_TRENDING_KEY, []);
+      return [];
+    }
     try {
       const parsed = JSON.parse(raw) as unknown;
-      if (!Array.isArray(parsed)) return [];
-      return parsed
+      if (!Array.isArray(parsed)) {
+        this.cacheSet(SHOP_TRENDING_KEY, []);
+        return [];
+      }
+      const ids = parsed
         .filter((id): id is string => typeof id === 'string' && id.length > 0)
         .slice(0, MAX_TRENDING_PRODUCTS);
+      this.cacheSet(SHOP_TRENDING_KEY, ids);
+      return ids;
     } catch {
+      this.cacheSet(SHOP_TRENDING_KEY, []);
       return [];
     }
   }
@@ -146,20 +187,27 @@ export class SettingsService {
   }
 
   async getDeliveryOrigin(): Promise<DeliveryOrigin> {
-    const raw = await this.getValue(DELIVERY_ORIGIN_KEY);
-    if (raw) {
-      try {
-        return JSON.parse(raw);
-      } catch {
-        // fallback
-      }
-    }
-    return {
+    const cached = this.cacheGet<DeliveryOrigin>(DELIVERY_ORIGIN_KEY);
+    if (cached) return cached;
+
+    const fallback: DeliveryOrigin = {
       lat: 9.0192,
       lon: 38.7525,
       displayAddress: 'Addis Ababa',
       description: '',
     };
+    const raw = await this.getValue(DELIVERY_ORIGIN_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as DeliveryOrigin;
+        this.cacheSet(DELIVERY_ORIGIN_KEY, parsed);
+        return parsed;
+      } catch {
+        // fallback
+      }
+    }
+    this.cacheSet(DELIVERY_ORIGIN_KEY, fallback);
+    return fallback;
   }
 
   async setDeliveryOrigin(origin: DeliveryOrigin): Promise<DeliveryOrigin> {
@@ -168,16 +216,26 @@ export class SettingsService {
   }
 
   async getDeliveryRate(): Promise<DeliveryRate> {
+    const cached = this.cacheGet<DeliveryRate>(DELIVERY_RATE_KEY);
+    if (cached) return cached;
+
+    const fallback: DeliveryRate = {
+      ...DEFAULT_DELIVERY_RATE,
+      bands: [...DEFAULT_DELIVERY_RATE.bands],
+    };
     const raw = await this.getValue(DELIVERY_RATE_KEY);
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as Record<string, unknown>;
-        return this.normalizeDeliveryRate(parsed);
+        const rate = this.normalizeDeliveryRate(parsed);
+        this.cacheSet(DELIVERY_RATE_KEY, rate);
+        return rate;
       } catch {
         // fallback
       }
     }
-    return { ...DEFAULT_DELIVERY_RATE, bands: [...DEFAULT_DELIVERY_RATE.bands] };
+    this.cacheSet(DELIVERY_RATE_KEY, fallback);
+    return fallback;
   }
 
   /** Migrate legacy ratePerKm/minFee shape → bands */
@@ -253,15 +311,10 @@ export class SettingsService {
   }
 
   async getPaymentInfo(): Promise<PaymentInfo> {
-    const raw = await this.getValue(PAYMENT_INFO_KEY);
-    if (raw) {
-      try {
-        return JSON.parse(raw);
-      } catch {
-        // fallback
-      }
-    }
-    return {
+    const cached = this.cacheGet<PaymentInfo>(PAYMENT_INFO_KEY);
+    if (cached) return cached;
+
+    const fallback: PaymentInfo = {
       bankAccount: {
         bankName: 'Commercial Bank of Ethiopia (CBE)',
         accountNumber: '1000XXXXXXXX',
@@ -272,6 +325,18 @@ export class SettingsService {
         accountName: 'Medaf Skin Care',
       },
     };
+    const raw = await this.getValue(PAYMENT_INFO_KEY);
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw) as PaymentInfo;
+        this.cacheSet(PAYMENT_INFO_KEY, parsed);
+        return parsed;
+      } catch {
+        // fallback
+      }
+    }
+    this.cacheSet(PAYMENT_INFO_KEY, fallback);
+    return fallback;
   }
 
   async setPaymentInfo(info: PaymentInfo): Promise<PaymentInfo> {
@@ -280,8 +345,13 @@ export class SettingsService {
   }
 
   async getSupportPhone(): Promise<string> {
+    const cached = this.cacheGet<string>(SUPPORT_PHONE_KEY);
+    if (cached) return cached;
+
     const raw = await this.getValue(SUPPORT_PHONE_KEY);
-    return raw?.trim() || '66XXXXXXXX';
+    const phone = raw?.trim() || '66XXXXXXXX';
+    this.cacheSet(SUPPORT_PHONE_KEY, phone);
+    return phone;
   }
 
   async setSupportPhone(phone: string): Promise<string> {
@@ -291,12 +361,25 @@ export class SettingsService {
   }
 
   async getShopSettings() {
+    const [
+      trendingProductIds,
+      paymentInfo,
+      supportPhone,
+      deliveryOrigin,
+      deliveryRate,
+    ] = await Promise.all([
+      this.getTrendingProductIds(),
+      this.getPaymentInfo(),
+      this.getSupportPhone(),
+      this.getDeliveryOrigin(),
+      this.getDeliveryRate(),
+    ]);
     return {
-      trendingProductIds: await this.getTrendingProductIds(),
-      paymentInfo: await this.getPaymentInfo(),
-      supportPhone: await this.getSupportPhone(),
-      deliveryOrigin: await this.getDeliveryOrigin(),
-      deliveryRate: await this.getDeliveryRate(),
+      trendingProductIds,
+      paymentInfo,
+      supportPhone,
+      deliveryOrigin,
+      deliveryRate,
     };
   }
 

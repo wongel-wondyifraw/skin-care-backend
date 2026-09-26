@@ -133,6 +133,7 @@ export class Order {
   balanceVerifiedAt: Date | null;
 
   /** Verify.ET automated verification request ID */
+  @Index()
   @Column({ type: 'varchar', length: 100, nullable: true })
   verifyEtRequestId: string | null;
 
@@ -144,6 +145,7 @@ export class Order {
   @Column({ type: 'jsonb', nullable: true })
   verifyEtRawResponse: Record<string, unknown> | null;
 
+  @Index()
   @Column({ type: 'varchar', length: 100, nullable: true })
   balanceVerifyEtRequestId: string | null;
 

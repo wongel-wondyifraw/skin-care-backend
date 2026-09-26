@@ -179,8 +179,10 @@ export class LocationIqService {
     withinRadius: boolean;
     bandLabel: string | null;
   }> {
-    const origin = await this.settingsService.getDeliveryOrigin();
-    const rate = await this.settingsService.getDeliveryRate();
+    const [origin, rate] = await Promise.all([
+      this.settingsService.getDeliveryOrigin(),
+      this.settingsService.getDeliveryRate(),
+    ]);
 
     if (
       !Number.isFinite(destLat) ||

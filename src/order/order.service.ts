@@ -7,7 +7,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository, MoreThanOrEqual } from 'typeorm';
+import { DataSource, Repository, MoreThanOrEqual, In } from 'typeorm';
 import { Order, OrderStatus, FulfilmentType, PaymentStage } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { Customer } from '../customer/customer.entity.js';
@@ -240,15 +240,19 @@ export class OrderService {
       quantity: number;
       unitPrice: number;
     }[] = [];
+    const productIds = items.map((line) => line.productId);
+    const products = await this.productRepository.find({
+      where: { id: In(productIds) },
+    });
+    const productById = new Map(products.map((p) => [p.id, p]));
+
     for (const line of items) {
       const quantity = Math.floor(Number(line.quantity));
       if (!Number.isFinite(quantity) || quantity < 1) {
         throw new BadRequestException('Quantity must be at least 1');
       }
 
-      const product = await this.productRepository.findOne({
-        where: { id: line.productId },
-      });
+      const product = productById.get(line.productId);
       if (!product) {
         throw new NotFoundException(`Product ${line.productId} not found`);
       }
@@ -329,8 +333,31 @@ export class OrderService {
           : 0;
 
       let paymentStage: PaymentStage = cartPaid.paymentStage;
-      let amountPaid =
-        cartPaid.paymentStage === 'full' ? lineTotal : lineAdvance;
+      // Credit the real bank amount across lines (e.g. 60% paid → 40% remaining)
+      let amountPaid: number;
+      if (cartPaid.paymentStage === 'full') {
+        amountPaid = lineTotal;
+      } else if (grandTotal > 0) {
+        amountPaid =
+          Math.round(cartPaid.amountPaid * (lineTotal / grandTotal) * 100) /
+          100;
+      } else {
+        amountPaid = cartPaid.amountPaid;
+      }
+      // Last line absorbs rounding so sum(amountPaid) ≈ cart paid
+      if (
+        i === productInfos.length - 1 &&
+        cartPaid.paymentStage === 'partial' &&
+        grandTotal > 0
+      ) {
+        const prior = created.reduce(
+          (sum, o) => sum + (Number(o.amountPaid) || 0),
+          0,
+        );
+        amountPaid =
+          Math.round((cartPaid.amountPaid - prior) * 100) / 100;
+        amountPaid = Math.max(0, Math.min(lineTotal, amountPaid));
+      }
 
       const order = await this.create({
         customerId,
@@ -950,8 +977,9 @@ export class OrderService {
       const clean = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
       const text =
         `⚠️ *Payment verification failed*\n\n` +
-        `${clean}\n\n` +
-        `_No order was placed._ Please try again with the correct payment method and a valid receipt.`;
+        `📝 Reason: ${clean}\n` +
+        `❌ No order was placed\n\n` +
+        `Please pay within *48 hours* and try again with a clear receipt (natural light) or paste your transaction number.`;
 
       await this.telegramService.sendMessageSafe(String(telegramId), text, {
         parse_mode: 'Markdown',
@@ -959,6 +987,91 @@ export class OrderService {
     } catch (err) {
       this.logger.warn(`Failed to send verification warning: ${err}`);
     }
+  }
+
+  private paymentMethodEmojiLabel(method?: string | null): string {
+    if (method === 'telebirr') return '📱 Telebirr';
+    if (method === 'bank') return '🏦 CBE';
+    return '💳 —';
+  }
+
+  /** Rich half/full payment copy for Telegram (checkout + bot). */
+  formatPaymentVerifiedMessage(order: Order): string {
+    const product = order.product?.name ?? 'Product';
+    const qty = order.quantity ?? 1;
+    const expected = order.expectedDeliveryDate
+      ? new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
+          month: 'short',
+          day: 'numeric',
+        })
+      : 'Tomorrow';
+    const location =
+      order.fulfilmentType === 'pickup'
+        ? `🏪 ${order.pickupLocation?.name || 'Store pickup'}`
+        : `📍 ${order.deliveryAddress?.trim() || 'Delivery'}`;
+    const paid =
+      Number(order.amountPaid) || Number(order.advancePaymentAmount) || 0;
+    const total = this.lineTotal(order);
+    const remaining = Math.max(0, Math.round((total - paid) * 100) / 100);
+    const isFull = order.paymentStage === 'full' || remaining <= 0.01;
+    const paidPct =
+      total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+    const remPct = Math.max(0, 100 - paidPct);
+    const method = this.paymentMethodEmojiLabel(
+      order.balancePaymentMethod || order.paymentMethod,
+    );
+
+    if (isFull) {
+      return (
+        `✅ *Full payment verified*\n\n` +
+        `🛍 ${product} × ${qty}\n` +
+        `💰 Order total: *${total.toFixed(2)} ETB*\n` +
+        `💵 Paid: *${paid.toFixed(2)} ETB* (${paidPct}%)\n` +
+        `✨ Outstanding: *0.00 ETB*\n` +
+        `${method}\n` +
+        `📅 Expected: *${expected}*\n` +
+        `${location}\n\n` +
+        `Your order is confirmed and fully paid. Thank you! 🌿`
+      );
+    }
+
+    return (
+      `✅ *Half payment verified*\n\n` +
+      `🛍 ${product} × ${qty}\n` +
+      `💰 Order total: *${total.toFixed(2)} ETB*\n` +
+      `💵 Paid now: *${paid.toFixed(2)} ETB* (${paidPct}%)\n` +
+      `⏳ Outstanding: *${remaining.toFixed(2)} ETB* (${remPct}%)\n` +
+      `${method}\n` +
+      `📅 Expected: *${expected}*\n` +
+      `${location}\n\n` +
+      `Pay the remaining from *My Orders* when ready.`
+    );
+  }
+
+  formatBalanceVerifiedMessage(order: Order, balancePaid?: number): string {
+    const product = order.product?.name ?? 'Order';
+    const qty = order.quantity ?? 1;
+    const total = this.lineTotal(order);
+    const paid = Number(order.amountPaid) || total;
+    const advance = Number(order.advancePaymentAmount) || 0;
+    const balance =
+      balancePaid != null && balancePaid > 0
+        ? balancePaid
+        : Math.max(0, Math.round((total - advance) * 100) / 100);
+    const method = this.paymentMethodEmojiLabel(
+      order.balancePaymentMethod || order.paymentMethod,
+    );
+
+    return (
+      `✅ *Remaining payment verified*\n\n` +
+      `🛍 ${product} × ${qty}\n` +
+      `💵 Balance paid: *${balance.toFixed(2)} ETB*\n` +
+      `✨ Status: *Fully paid*\n` +
+      `💰 Order total: *${total.toFixed(2)} ETB*\n` +
+      `💵 Total collected: *${paid.toFixed(2)} ETB*\n` +
+      `${method}\n\n` +
+      `No outstanding balance. See you at delivery/pickup! 🌿`
+    );
   }
 
   /**
@@ -1257,48 +1370,22 @@ export class OrderService {
     const telegramId = order.customer?.telegramId;
     if (telegramId == null) return;
 
-    const expected = order.expectedDeliveryDate
-      ? new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-        })
-      : 'Tomorrow';
-    const location =
-      order.fulfilmentType === 'pickup'
-        ? order.pickupLocation?.name || 'Store pickup'
-        : order.deliveryAddress?.trim() || 'Delivery';
-    const paid = Number(order.amountPaid) || Number(order.advancePaymentAmount) || 0;
-    const total = this.lineTotal(order);
-    const remaining = Math.max(0, total - paid);
-    const isFull = order.paymentStage === 'full' || remaining <= 0.01;
-
-    const text = isFull
-      ? `✅ *Fully paid & verified*\n\n` +
-        `💵 Paid: *${paid.toFixed(2)} ETB*\n` +
-        `📅 Expected: *${expected}*\n` +
-        `📍 ${location}`
-      : `✅ *Half payment verified*\n\n` +
-        `💵 Paid: *${paid.toFixed(2)} ETB*\n` +
-        `💳 Remaining: *${remaining.toFixed(2)} ETB*\n` +
-        `📅 Expected: *${expected}*\n` +
-        `📍 ${location}\n\n` +
-        `You can pay the remaining balance from My Orders.`;
-
-    await this.telegramService.sendMessageSafe(String(telegramId), text, {
-      parse_mode: 'Markdown',
-    });
+    await this.telegramService.sendMessageSafe(
+      String(telegramId),
+      this.formatPaymentVerifiedMessage(order),
+      { parse_mode: 'Markdown' },
+    );
   }
 
   private async notifyCustomerBalanceVerified(order: Order): Promise<void> {
     const telegramId = order.customer?.telegramId;
     if (telegramId == null) return;
-    const total = this.lineTotal(order);
-    const text =
-      `✅ *Remaining payment verified*\n\n` +
-      `${order.product?.name ?? 'Order'} is now *fully paid* (${total.toFixed(2)} ETB).`;
-    await this.telegramService.sendMessageSafe(String(telegramId), text, {
-      parse_mode: 'Markdown',
-    });
+
+    await this.telegramService.sendMessageSafe(
+      String(telegramId),
+      this.formatBalanceVerifiedMessage(order),
+      { parse_mode: 'Markdown' },
+    );
   }
 
   private async notifyCustomerDelivered(order: Order): Promise<void> {

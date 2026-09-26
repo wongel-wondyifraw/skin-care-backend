@@ -1022,12 +1022,12 @@ export class TelegramUpdate {
 
       const paymentInfo = await this.settingsService.getPaymentInfo();
       await ctx.reply(
-        `*Pay remaining balance*\n\n` +
-          `${order.product?.name ?? 'Product'} × ${order.quantity}\n` +
-          `Remaining: *${remaining.toFixed(2)} ETB*\n\n` +
-          `CBE: \`${paymentInfo.bankAccount.accountNumber}\`\n` +
-          `Telebirr: \`${paymentInfo.telebirr.phoneNumber}\`\n\n` +
-          `How did you pay?`,
+        `💳 *Pay remaining balance*\n\n` +
+          `🛍 ${order.product?.name ?? 'Product'} × ${order.quantity}\n` +
+          `⏳ Outstanding: *${remaining.toFixed(2)} ETB*\n\n` +
+          `🏦 CBE: \`${paymentInfo.bankAccount.accountNumber}\`\n` +
+          `📱 Telebirr: \`${paymentInfo.telebirr.phoneNumber}\`\n\n` +
+          `Pay within *48 hours*, then choose how you paid:`,
         {
           parse_mode: 'Markdown',
           reply_markup: {
@@ -1090,26 +1090,30 @@ export class TelegramUpdate {
 
       let paymentLine = '';
       if (stage === 'full') {
-        paymentLine = `Payment: *Fully paid*${methodLabel ? ` · ${methodLabel}` : ''}`;
+        paymentLine = `✨ Payment: *Fully paid*${methodLabel ? ` · ${methodLabel}` : ''}`;
       } else if (stage === 'partial') {
+        const paidPct =
+          total > 0 ? Math.min(100, Math.round((paid / total) * 100)) : 0;
+        const remPct = Math.max(0, 100 - paidPct);
         paymentLine =
-          `Payment: *Verified*${methodLabel ? ` · ${methodLabel}` : ''}\n` +
-          `Paid ${paid.toFixed(2)} / ${total.toFixed(2)} ETB · Remaining *${remaining.toFixed(2)} ETB*`;
+          `✅ Half verified${methodLabel ? ` · ${methodLabel}` : ''}\n` +
+          `💵 Paid *${paid.toFixed(2)}* / ${total.toFixed(2)} ETB (${paidPct}%)\n` +
+          `⏳ Outstanding *${remaining.toFixed(2)} ETB* (${remPct}%)`;
       } else if (order.status === 'payment_submitted') {
-        paymentLine = `Payment: Under review`;
+        paymentLine = `⏳ Payment: Under review`;
       } else if (order.status === 'awaiting_payment') {
-        paymentLine = `Payment: Awaiting · Advance ${(Number(order.advancePaymentAmount) || 0).toFixed(2)} ETB`;
+        paymentLine = `💳 Payment: Awaiting · Advance ${(Number(order.advancePaymentAmount) || 0).toFixed(2)} ETB`;
       }
 
       const statusLabel =
         order.status === 'confirmed' && stage === 'partial'
-          ? 'Verified (half paid)'
+          ? '✅ Verified (half paid)'
           : order.status === 'confirmed' && stage === 'full'
-            ? 'Verified (fully paid)'
+            ? '✨ Verified (fully paid)'
             : order.status;
 
       const text =
-        `*${order.product?.name ?? 'Product'}* × ${order.quantity}\n` +
+        `🛍 *${order.product?.name ?? 'Product'}* × ${order.quantity}\n` +
         `Status: ${statusLabel}\n` +
         `${paymentLine}`;
 
@@ -1827,6 +1831,7 @@ export class TelegramUpdate {
         session.pendingPaymentPhotoUrl = undefined;
         await ctx.reply(
           'Please send a *screenshot of your payment receipt*, or reply with your *transaction number*.\n\n' +
+            'If you send a photo, use *natural light* so the text is clear.\n\n' +
             'You can tap *Remove screenshot* after sending a photo if you need to change it.',
           {
             parse_mode: 'Markdown',
@@ -1845,6 +1850,7 @@ export class TelegramUpdate {
         session.pendingPaymentPhotoUrl = undefined;
         await ctx.reply(
           'Please send a *screenshot of your payment receipt*, or reply with your *transaction number*.\n\n' +
+            'If you send a photo, use *natural light* so the text is clear.\n\n' +
             'You can tap *Remove screenshot* after sending a photo if you need to change it.',
           {
             parse_mode: 'Markdown',
@@ -1907,7 +1913,8 @@ export class TelegramUpdate {
         this.orderSessions.set(chatId, session);
         await ctx.reply(
           `Pay *${(session.remainingAmount ?? 0).toFixed(2)} ETB* remaining.\n\n` +
-            `Send a *screenshot* or type your *transaction number*.`,
+            `Send a *screenshot* or type your *transaction number*.\n` +
+            `If you send a photo, use *natural light* so the text is clear.`,
           {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -1926,7 +1933,8 @@ export class TelegramUpdate {
         this.orderSessions.set(chatId, session);
         await ctx.reply(
           `Pay *${(session.remainingAmount ?? 0).toFixed(2)} ETB* remaining.\n\n` +
-            `Send a *screenshot* or type your *transaction number*.`,
+            `Send a *screenshot* or type your *transaction number*.\n` +
+            `If you send a photo, use *natural light* so the text is clear.`,
           {
             parse_mode: 'Markdown',
             reply_markup: {
@@ -2011,18 +2019,17 @@ export class TelegramUpdate {
       );
       const stage = this.orderService.effectivePaymentStage(updated);
       if (stage === 'full') {
+        await ctx.reply(this.orderService.formatBalanceVerifiedMessage(updated), {
+          parse_mode: 'Markdown',
+          reply_markup: this.userKeyboard(ctx.from?.id),
+        });
+      } else {
         await ctx.reply(
-          `✅ *Remaining payment verified*\n\n` +
-            `${session.productName} is now fully paid.`,
+          `⏳ *Payment submitted*\n\nVerifying with the bank… We'll confirm shortly.`,
           {
             parse_mode: 'Markdown',
             reply_markup: this.userKeyboard(ctx.from?.id),
           },
-        );
-      } else {
-        await ctx.reply(
-          `Payment submitted — verifying with the bank. We'll confirm shortly.`,
-          { reply_markup: this.userKeyboard(ctx.from?.id) },
         );
       }
       this.orderSessions.delete(chatId);
@@ -2042,8 +2049,13 @@ export class TelegramUpdate {
         }
       }
       await ctx.reply(
-        `Payment verification failed:\n${msg}\n\nPlease paste the correct transaction number or send a clearer receipt.`,
-        { reply_markup: this.userKeyboard(ctx.from?.id) },
+        `⚠️ *Payment verification failed*\n\n` +
+          `📝 Reason: ${msg}\n\n` +
+          `Please paste the correct transaction number or send a clearer receipt (natural light).`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: this.userKeyboard(ctx.from?.id),
+        },
       );
     }
   }
@@ -2057,7 +2069,10 @@ export class TelegramUpdate {
   ) {
     await ctx.reply(`Calculating delivery fee…`);
 
-    const feeRes = await this.locationIqService.calculateDeliveryFee(lat, lon);
+    const [feeRes, reverse] = await Promise.all([
+      this.locationIqService.calculateDeliveryFee(lat, lon),
+      this.locationIqService.reverseGeocode(lat, lon),
+    ]);
     if (!feeRes.withinRadius) {
       await ctx.reply(
         `That location is outside our delivery area`+
@@ -2083,7 +2098,6 @@ export class TelegramUpdate {
       return;
     }
 
-    const reverse = await this.locationIqService.reverseGeocode(lat, lon);
     session.deliveryLat = lat;
     session.deliveryLon = lon;
     session.deliveryDistanceKm = feeRes.distanceKm;
@@ -2277,8 +2291,14 @@ export class TelegramUpdate {
           }
         }
         await ctx.reply(
-          `⚠️ Payment verification failed\n\n${msg}\n\nNo order was placed. Please try again with the correct method and receipt.`,
-          { reply_markup: this.userKeyboard(ctx.from?.id) },
+          `⚠️ *Payment verification failed*\n\n` +
+            `📝 Reason: ${msg}\n` +
+            `❌ No order was placed\n\n` +
+            `Please pay within *48 hours* and try again with a clear receipt (natural light) or paste your transaction number.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: this.userKeyboard(ctx.from?.id),
+          },
         );
         return;
       }
@@ -2287,10 +2307,16 @@ export class TelegramUpdate {
       if (verifyResult.outcome !== 'verified') {
         const reason =
           verifyResult.failureReason ||
-          `Payment could not be verified (${verifyResult.outcome}). No order was placed.`;
+          `Payment could not be verified (${verifyResult.outcome}).`;
         await ctx.reply(
-          `⚠️ Payment verification failed\n\n${reason}\n\nPlease try again.`,
-          { reply_markup: this.userKeyboard(ctx.from?.id) },
+          `⚠️ *Payment verification failed*\n\n` +
+            `📝 Reason: ${reason}\n` +
+            `❌ No order was placed\n\n` +
+            `Please try again with the correct method and receipt.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: this.userKeyboard(ctx.from?.id),
+          },
         );
         return;
       }
@@ -2331,27 +2357,8 @@ export class TelegramUpdate {
       });
 
       const supportPhone = await this.settingsService.getSupportPhone();
-      const expectedDate = tomorrow.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-      });
-      const location =
-        session.fulfilmentType === 'pickup'
-          ? session.pickupLocationName || 'Store pickup'
-          : session.deliveryAddress || 'Your location';
-
       const remaining = Math.max(0, total - paid.amountPaid);
-      const summary =
-        paid.paymentStage === 'full'
-          ? `*Order confirmed — fully paid*\n\n` +
-            `Paid: *${paid.amountPaid.toFixed(2)} ETB*\n` +
-            `Expected: *${expectedDate}*\n` +
-            `${location}`
-          : `*Half payment verified*\n\n` +
-            `Paid: *${paid.amountPaid.toFixed(2)} ETB*\n` +
-            `Remaining: *${remaining.toFixed(2)} ETB*\n` +
-            `Expected: *${expectedDate}*\n` +
-            `${location}`;
+      const summary = this.orderService.formatPaymentVerifiedMessage(order);
 
       const inlineRows: { text: string; callback_data: string }[][] = [];
       if (paid.paymentStage === 'partial' && remaining > 0.01) {
@@ -2382,26 +2389,27 @@ export class TelegramUpdate {
       let msg = err instanceof Error ? err.message : String(err);
       if (
         err &&
-        typeof err === 'object'&&
-        'getResponse'in err &&
+        typeof err === 'object' &&
+        'getResponse' in err &&
         typeof (err as { getResponse: () => unknown }).getResponse ===
           'function'
       ) {
         const body = (err as { getResponse: () => unknown }).getResponse();
         if (typeof body === 'string') msg = body;
-        else if (
-          body &&
-          typeof body === 'object'&&
-          'message'in body
-        ) {
+        else if (body && typeof body === 'object' && 'message' in body) {
           const m = (body as { message: string | string[] }).message;
           msg = Array.isArray(m) ? m.join('') : String(m);
         }
       }
       this.logger.error(`Failed to create order: ${msg}`);
       await ctx.reply(
-        `⚠️ Payment verification failed\n\n${msg}\n\nNo order was placed.`,
-        { reply_markup: this.userKeyboard(ctx.from?.id) },
+        `⚠️ *Payment verification failed*\n\n` +
+          `📝 Reason: ${msg}\n` +
+          `❌ No order was placed`,
+        {
+          parse_mode: 'Markdown',
+          reply_markup: this.userKeyboard(ctx.from?.id),
+        },
       );
     }
   }

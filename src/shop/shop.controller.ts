@@ -375,7 +375,6 @@ export class ShopController {
     return this.settingsService.getPaymentInfo();
   }
 
-  @UseGuards(CustomerJwtAuthGuard)
   @Get('support-phone')
   async getSupportPhone() {
     return { supportPhone: await this.settingsService.getSupportPhone() };
