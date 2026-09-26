@@ -3,6 +3,7 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { Order } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
 import { PickupLocation } from '../pickup-location/pickup-location.entity.js';
+import { Customer } from '../customer/customer.entity.js';
 import { OrderService } from './order.service.js';
 import { OrderController } from './order.controller.js';
 import { TelegramModule } from '../telegram/telegram.module.js';
@@ -12,7 +13,7 @@ import { PaymentModule } from '../payment/payment.module.js';
 
 @Module({
   imports: [
-    TypeOrmModule.forFeature([Order, Product, PickupLocation]),
+    TypeOrmModule.forFeature([Order, Product, PickupLocation, Customer]),
     forwardRef(() => TelegramModule),
     NotificationModule,
     forwardRef(() => SettingsModule),

@@ -346,23 +346,42 @@ export class GeminiService {
   }
 
   /**
-   * Extract transaction reference number from a photo buffer or text SMS.
+   * Identify CBE vs Telebirr from the receipt image, then extract the transaction number.
+   * Branding/names drive bank detection — not the user's selected method.
    */
-  async extractTransactionNumber(input: {
+  async extractReceiptPayment(input: {
     url?: string;
     buffer?: Buffer;
     text?: string;
-    paymentMethod: 'bank' | 'telebirr';
-  }): Promise<string | null> {
-    const bankHint =
-      input.paymentMethod === 'telebirr'
-        ? 'Telebirr transaction / reference number (often alphanumeric like DET8FJGUJ4).'
-        : 'CBE / bank FT reference (often starts with FT followed by digits/letters).';
+  }): Promise<{
+    bank: 'cbe' | 'telebirr' | 'unknown';
+    transactionNumber: string | null;
+    confidence: 'high' | 'medium' | 'low';
+    signals: string[];
+  }> {
+    const prompt = `You analyze Ethiopian mobile-money / bank transfer receipts.
 
-    const prompt = `Extract ONLY the transaction reference number from this ${input.paymentMethod} payment receipt.
-Look for: ${bankHint}
-If multiple numbers appear, prefer the FT reference or the labeled transaction/reference ID — not phone numbers, amounts, or dates.
-Return EXACTLY the transaction number and nothing else. No prefixes, labels, or punctuation. If you cannot find any transaction number, return "NOT_FOUND".`;
+STEP 1 — Identify which app/bank issued this receipt by searching visible names, logos, and UI text:
+- "cbe" if you see: Commercial Bank of Ethiopia, CBE, CBE Birr, CBE Mobile Banking, CBEServe, or similar CBE branding.
+- "telebirr" if you see: telebirr, Telebirr, Ethio telecom, ethio telecom wallet branding.
+- "unknown" only if neither is clear.
+
+STEP 2 — Extract the transaction / reference number with bank-specific rules:
+- If bank is cbe: prefer an FT reference (starts with FT, usually ALL CAPS alphanumeric, e.g. FT25123ABCDEF). Prefer labeled FT Number / Transaction ID / Reference. Ignore account numbers, phones, amounts, dates.
+- If bank is telebirr: prefer labeled Transaction number / Transaction ID / Receipt No (alphanumeric like DET8FJGUJ4). Ignore phone numbers (09…), amounts, dates.
+- If bank is unknown: still try to extract — if the token starts with FT treat as CBE-style; otherwise take the clearest transaction/reference ID.
+
+Return ONLY valid JSON (no markdown fences):
+{"bank":"cbe"|"telebirr"|"unknown","transactionNumber":"STRING_OR_NULL","confidence":"high"|"medium"|"low","signals":["short phrases you saw"]}
+
+If no transaction number is found, set transactionNumber to null.`;
+
+    const empty = {
+      bank: 'unknown' as const,
+      transactionNumber: null,
+      confidence: 'low' as const,
+      signals: [] as string[],
+    };
 
     try {
       let buffer = input.buffer;
@@ -383,6 +402,7 @@ Return EXACTLY the transaction number and nothing else. No prefixes, labels, or 
         }
       }
 
+      let rawText = '';
       if (buffer) {
         const result = await this.receiptModel.generateContent([
           prompt,
@@ -393,23 +413,105 @@ Return EXACTLY the transaction number and nothing else. No prefixes, labels, or 
             },
           },
         ]);
-        return this.normalizeExtractedTx(result.response.text());
-      }
-
-      if (input.text) {
+        rawText = result.response.text();
+      } else if (input.text) {
         const result = await this.receiptModel.generateContent([
           prompt,
           input.text,
         ]);
-        return this.normalizeExtractedTx(result.response.text());
+        rawText = result.response.text();
+      } else {
+        return empty;
       }
+
+      return this.parseReceiptExtract(rawText);
     } catch (err) {
-      this.logger.error(
-        `Failed to extract transaction number via Gemini: ${err}`,
-      );
-      return null;
+      this.logger.error(`Failed to extract receipt payment via Gemini: ${err}`);
+      return empty;
     }
-    return null;
+  }
+
+  /** @deprecated Prefer extractReceiptPayment — kept for callers that only need a TX string. */
+  async extractTransactionNumber(input: {
+    url?: string;
+    buffer?: Buffer;
+    text?: string;
+    paymentMethod: 'bank' | 'telebirr';
+  }): Promise<string | null> {
+    const receipt = await this.extractReceiptPayment(input);
+    return receipt.transactionNumber;
+  }
+
+  private parseReceiptExtract(raw: string): {
+    bank: 'cbe' | 'telebirr' | 'unknown';
+    transactionNumber: string | null;
+    confidence: 'high' | 'medium' | 'low';
+    signals: string[];
+  } {
+    const empty = {
+      bank: 'unknown' as const,
+      transactionNumber: null,
+      confidence: 'low' as const,
+      signals: [] as string[],
+    };
+
+    let parsed: Record<string, unknown> | null = null;
+    try {
+      const cleaned = raw
+        .trim()
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        parsed = JSON.parse(cleaned.slice(start, end + 1)) as Record<
+          string,
+          unknown
+        >;
+      }
+    } catch {
+      // Fall through to TX-only salvage
+    }
+
+    let bank: 'cbe' | 'telebirr' | 'unknown' = 'unknown';
+    let confidence: 'high' | 'medium' | 'low' = 'low';
+    let signals: string[] = [];
+    let tx: string | null = null;
+
+    if (parsed) {
+      const b = String(parsed.bank || '').toLowerCase();
+      if (b === 'cbe' || b === 'bank') bank = 'cbe';
+      else if (b === 'telebirr') bank = 'telebirr';
+      const c = String(parsed.confidence || '').toLowerCase();
+      if (c === 'high' || c === 'medium' || c === 'low') confidence = c;
+      if (Array.isArray(parsed.signals)) {
+        signals = parsed.signals.map((s) => String(s)).slice(0, 8);
+      }
+      tx = this.normalizeExtractedTx(String(parsed.transactionNumber ?? ''));
+    } else {
+      tx = this.normalizeExtractedTx(raw);
+    }
+
+    // Secondary signal from TX shape when branding unknown
+    if (bank === 'unknown' && tx) {
+      if (/^FT[A-Z0-9]+$/i.test(tx)) {
+        bank = 'cbe';
+        confidence = confidence === 'low' ? 'medium' : confidence;
+        signals = [...signals, 'FT prefix'];
+      }
+    }
+
+    if (bank === 'cbe' && tx) {
+      tx = tx.toUpperCase();
+    }
+
+    return {
+      bank,
+      transactionNumber: tx,
+      confidence,
+      signals,
+    };
   }
 
   private normalizeExtractedTx(raw: string): string | null {
@@ -418,8 +520,11 @@ Return EXACTLY the transaction number and nothing else. No prefixes, labels, or 
       .replace(/^["'`]+|["'`]+$/g, '')
       .replace(/^(transaction|reference|ref|tx|id)\s*[:=#-]?\s*/i, '')
       .trim();
-    if (!text || /^not[_\s-]?found$/i.test(text)) return null;
-    // Take first token-like ref if model added extra words
+    if (!text || /^not[_\s-]?found$/i.test(text) || text === 'null') {
+      return null;
+    }
+    const ft = text.match(/FT[A-Z0-9]{6,}/i);
+    if (ft) return ft[0].toUpperCase();
     const match = text.match(/[A-Za-z0-9][A-Za-z0-9_./-]{5,}/);
     return match ? match[0] : text.length >= 6 ? text.split(/\s+/)[0] : null;
   }

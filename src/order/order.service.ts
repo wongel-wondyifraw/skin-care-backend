@@ -8,13 +8,9 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { DataSource, Repository, MoreThanOrEqual } from 'typeorm';
-import {
-  Order,
-  OrderStatus,
-  FulfilmentType,
-  PaymentStage,
-} from './order.entity.js';
+import { Order, OrderStatus, FulfilmentType, PaymentStage } from './order.entity.js';
 import { Product } from '../product/product.entity.js';
+import { Customer } from '../customer/customer.entity.js';
 import { TelegramService } from '../telegram/telegram.service.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -57,6 +53,8 @@ export class OrderService {
     private readonly orderRepository: Repository<Order>,
     @InjectRepository(Product)
     private readonly productRepository: Repository<Product>,
+    @InjectRepository(Customer)
+    private readonly customerRepository: Repository<Customer>,
     private readonly dataSource: DataSource,
     @Inject(forwardRef(() => TelegramService))
     private readonly telegramService: TelegramService,
@@ -104,24 +102,25 @@ export class OrderService {
 
   /**
    * Map Verify.ET amount to partial vs full for a single line.
-   * Missing/zero amount → treat as advance (partial).
+   * Requires a real bank amount — never credits advance when amount is unknown.
    */
   resolvePaidFromAmount(
     verifiedAmount: number | undefined | null,
-    advance: number,
+    _advance: number,
     total: number,
   ): { paymentStage: PaymentStage; amountPaid: number } {
     const amt = Number(verifiedAmount) || 0;
-    const adv = Math.max(0, advance);
     const tot = Math.max(0, total);
+    if (!(amt > 0)) {
+      throw new BadRequestException(
+        'Payment amount could not be confirmed. Please try again with a valid receipt.',
+      );
+    }
     if (tot > 0 && amt >= tot - 1) {
       return { paymentStage: 'full', amountPaid: tot };
     }
-    const paid = amt > 0 ? Math.min(Math.max(amt, adv), tot || amt) : adv;
-    return {
-      paymentStage: tot > 0 && paid >= tot - 1 ? 'full' : 'partial',
-      amountPaid: Math.round(paid * 100) / 100,
-    };
+    const amountPaid = Math.round(Math.min(amt, tot || amt) * 100) / 100;
+    return { paymentStage: 'partial', amountPaid };
   }
 
   /** Legacy rows: confirmed with no stage → treat as partial. */
@@ -266,42 +265,57 @@ export class OrderService {
     const grandTotal = subtotal + deliveryFee;
     const totalAdvance = Math.round(grandTotal * 0.5 * 100) / 100;
 
-    // Verify payment: fast path = verified now; else queue + webhook/background
+    // Spot-only: payment must verify immediately or no order is created
+    if (!opts.paymentEvidence?.trim() || !opts.paymentMethod) {
+      throw new BadRequestException(
+        'Payment method and transaction reference (or receipt screenshot) are required.',
+      );
+    }
+
     let verifyResult: Awaited<
       ReturnType<OrderService['verifyEvidence']>
-    >['result'] | null = null;
-    let extractedTxId: string | null = null;
+    >['result'];
+    let extractedTxId: string;
 
-    if (opts.paymentEvidence || opts.paymentMethod) {
-      if (!opts.paymentEvidence?.trim() || !opts.paymentMethod) {
-        throw new BadRequestException(
-          'Payment method and transaction reference (or receipt screenshot) are required.',
-        );
-      }
-
+    try {
       const v = await this.verifyEvidence(
         opts.paymentMethod as 'bank' | 'telebirr',
         opts.paymentEvidence,
         totalAdvance,
+        undefined,
+        customerId,
       );
       verifyResult = v.result;
       extractedTxId = v.extractedTxId;
       this.assertPaymentAcceptable(verifyResult);
+    } catch (err) {
+      const reason =
+        err instanceof BadRequestException
+          ? String(
+              (err.getResponse() as { message?: string | string[] })?.message ??
+                err.message,
+            )
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      const msg = Array.isArray(reason) ? reason.join(' ') : reason;
+      void this.notifyCustomerVerificationFailed(customerId, msg);
+      throw err;
     }
 
-    const initialStatus: OrderStatus =
-      verifyResult?.outcome === 'verified'
-        ? 'confirmed'
-        : verifyResult?.outcome === 'queued'
-          ? 'payment_submitted'
-          : 'awaiting_payment';
+    if (verifyResult.outcome !== 'verified') {
+      const msg =
+        verifyResult.failureReason ||
+        'Payment could not be verified. No order was placed.';
+      void this.notifyCustomerVerificationFailed(customerId, msg);
+      throw new BadRequestException(msg);
+    }
 
-    const verifiedAmount =
-      verifyResult?.outcome === 'verified' ? verifyResult.amount : undefined;
-    const cartPaid =
-      verifyResult?.outcome === 'verified'
-        ? this.resolvePaidFromAmount(verifiedAmount, totalAdvance, grandTotal)
-        : null;
+    const cartPaid = this.resolvePaidFromAmount(
+      verifyResult.amount,
+      totalAdvance,
+      grandTotal,
+    );
 
     const created: Order[] = [];
     for (let i = 0; i < productInfos.length; i++) {
@@ -314,15 +328,9 @@ export class OrderService {
           ? Math.round((lineCost + lineDeliveryFee) * 0.5 * 100) / 100
           : 0;
 
-      let paymentStage: PaymentStage = 'unpaid';
-      let amountPaid = 0;
-      if (cartPaid?.paymentStage === 'full') {
-        paymentStage = 'full';
-        amountPaid = lineTotal;
-      } else if (cartPaid?.paymentStage === 'partial') {
-        paymentStage = 'partial';
-        amountPaid = lineAdvance;
-      }
+      let paymentStage: PaymentStage = cartPaid.paymentStage;
+      let amountPaid =
+        cartPaid.paymentStage === 'full' ? lineTotal : lineAdvance;
 
       const order = await this.create({
         customerId,
@@ -333,7 +341,7 @@ export class OrderService {
         deliveryLat: opts.deliveryLat ?? null,
         deliveryLon: opts.deliveryLon ?? null,
         deliveryDistanceKm: opts.deliveryDistanceKm ?? null,
-        status: initialStatus,
+        status: 'confirmed',
         fulfilmentType,
         pickupLocationId: opts.pickupLocationId ?? null,
         deliveryFee: lineDeliveryFee,
@@ -342,38 +350,22 @@ export class OrderService {
         amountPaid,
         paymentStage,
         paymentMethod: opts.paymentMethod ?? null,
-        paymentEvidence: extractedTxId ?? opts.paymentEvidence ?? null,
-        paymentSubmittedAt: verifyResult ? new Date() : null,
-        paymentVerifiedAt:
-          verifyResult?.outcome === 'verified' ? new Date() : null,
+        paymentEvidence: extractedTxId,
+        paymentSubmittedAt: new Date(),
+        paymentVerifiedAt: new Date(),
         balanceVerifiedAt:
-          paymentStage === 'full' && verifyResult?.outcome === 'verified'
-            ? new Date()
-            : null,
-        verifyEtRequestId: verifyResult?.requestId ?? null,
-        verifyEtStatus: verifyResult?.outcome ?? null,
-        verifyEtRawResponse: verifyResult?.rawResponse ?? null,
+          paymentStage === 'full' ? new Date() : null,
+        verifyEtRequestId: verifyResult.requestId ?? null,
+        verifyEtStatus: verifyResult.outcome,
+        verifyEtRawResponse: verifyResult.rawResponse ?? null,
       });
 
       created.push(order);
     }
 
-    if (initialStatus === 'confirmed') {
-      for (const order of created) {
-        void this.notifyCustomerPaymentVerified(order);
-        void this.notifyAdminsPaymentVerified(order);
-      }
-    } else if (initialStatus === 'payment_submitted') {
-      void this.notifyAdminsPaymentSubmitted(created[0]);
-      // Webhook + background poll will confirm (or fail) without blocking checkout
-      void this.finishQueuedVerification(created, totalAdvance, grandTotal);
-    } else {
-      void this.notifyCustomerShopOrdersPlaced(
-        created,
-        grandTotal,
-        totalAdvance,
-        deliveryFee,
-      );
+    for (const order of created) {
+      void this.notifyCustomerPaymentVerified(order);
+      void this.notifyAdminsPaymentVerified(order);
     }
 
     return created;
@@ -535,14 +527,35 @@ export class OrderService {
 
     const advance = Number(order.advancePaymentAmount) || 0;
     const total = this.lineTotal(order);
-    const v = await this.verifyEvidence(
-      evidence.paymentMethod,
-      evidence.paymentEvidence,
-      advance,
-      order.id,
-    );
 
-    this.assertPaymentAcceptable(v.result);
+    // Recompute advance from line total so delivery fee is never dropped
+    const expectedAdvance =
+      advance > 0 ? advance : Math.round(total * 0.5 * 100) / 100;
+
+    let v: Awaited<ReturnType<OrderService['verifyEvidence']>>;
+    try {
+      v = await this.verifyEvidence(
+        evidence.paymentMethod,
+        evidence.paymentEvidence,
+        expectedAdvance,
+        order.id,
+        customerId,
+      );
+      this.assertPaymentAcceptable(v.result);
+    } catch (err) {
+      const reason =
+        err instanceof BadRequestException
+          ? String(
+              (err.getResponse() as { message?: string | string[] })?.message ??
+                err.message,
+            )
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      const msg = Array.isArray(reason) ? reason.join(' ') : reason;
+      void this.notifyCustomerVerificationFailed(customerId, msg);
+      throw err;
+    }
 
     order.paymentMethod = evidence.paymentMethod;
     order.paymentEvidence = v.extractedTxId;
@@ -552,35 +565,24 @@ export class OrderService {
     order.verifyEtRawResponse =
       (v.result.rawResponse as Record<string, unknown>) ?? null;
 
-    if (v.result.outcome === 'verified') {
-      const paid = this.resolvePaidFromAmount(v.result.amount, advance, total);
-      order.status = 'confirmed';
-      order.paymentVerifiedAt = new Date();
-      order.paymentStage = paid.paymentStage;
-      order.amountPaid = paid.amountPaid;
-      if (paid.paymentStage === 'full') {
-        order.balanceVerifiedAt = new Date();
-      }
-    } else {
-      order.status = 'payment_submitted';
+    const paid = this.resolvePaidFromAmount(
+      v.result.amount,
+      expectedAdvance,
+      total,
+    );
+    order.status = 'confirmed';
+    order.paymentVerifiedAt = new Date();
+    order.paymentStage = paid.paymentStage;
+    order.amountPaid = paid.amountPaid;
+    if (paid.paymentStage === 'full') {
+      order.balanceVerifiedAt = new Date();
     }
 
     await this.orderRepository.save(order);
 
     const updated = await this.findOne(order.id);
-
-    if (updated.status === 'confirmed') {
-      void this.notifyCustomerPaymentVerified(updated);
-      void this.notifyAdminsPaymentVerified(updated);
-    } else {
-      void this.notifyAdminsPaymentSubmitted(updated);
-      void this.finishQueuedVerification(
-        [updated],
-        advance,
-        total,
-      );
-    }
-
+    void this.notifyCustomerPaymentVerified(updated);
+    void this.notifyAdminsPaymentVerified(updated);
     return updated;
   }
 
@@ -593,13 +595,30 @@ export class OrderService {
     remaining: number,
   ): Promise<Order> {
     const total = this.lineTotal(order);
-    const v = await this.verifyEvidence(
-      evidence.paymentMethod,
-      evidence.paymentEvidence,
-      remaining,
-      order.id,
-    );
-    this.assertPaymentAcceptable(v.result);
+    let v: Awaited<ReturnType<OrderService['verifyEvidence']>>;
+    try {
+      v = await this.verifyEvidence(
+        evidence.paymentMethod,
+        evidence.paymentEvidence,
+        remaining,
+        order.id,
+        order.customerId,
+      );
+      this.assertPaymentAcceptable(v.result);
+    } catch (err) {
+      const reason =
+        err instanceof BadRequestException
+          ? String(
+              (err.getResponse() as { message?: string | string[] })?.message ??
+                err.message,
+            )
+          : err instanceof Error
+            ? err.message
+            : String(err);
+      const msg = Array.isArray(reason) ? reason.join(' ') : reason;
+      void this.notifyCustomerVerificationFailed(order.customerId, msg);
+      throw err;
+    }
 
     order.balancePaymentMethod = evidence.paymentMethod;
     order.balancePaymentEvidence = v.extractedTxId;
@@ -607,20 +626,14 @@ export class OrderService {
     order.balanceVerifyEtRequestId = v.result.requestId ?? null;
     order.balanceVerifyEtStatus = v.result.outcome;
 
-    if (v.result.outcome === 'verified') {
-      order.paymentStage = 'full';
-      order.amountPaid = total;
-      order.balanceVerifiedAt = new Date();
-      await this.orderRepository.save(order);
-      const updated = await this.findOne(order.id);
-      void this.notifyCustomerBalanceVerified(updated);
-      void this.notifyAdminsBalanceVerified(updated);
-      return updated;
-    }
-
+    order.paymentStage = 'full';
+    order.amountPaid = total;
+    order.balanceVerifiedAt = new Date();
     await this.orderRepository.save(order);
-    void this.finishQueuedBalanceVerification(order, remaining, total);
-    return this.findOne(order.id);
+    const updated = await this.findOne(order.id);
+    void this.notifyCustomerBalanceVerified(updated);
+    void this.notifyAdminsBalanceVerified(updated);
+    return updated;
   }
 
   /** Admin verifies advance payment → confirmed + partial (or full if known) */
@@ -762,13 +775,15 @@ export class OrderService {
   /**
    * Normalize evidence then call Verify.ET.
    * - Pasted TX text: cleaned locally (no Gemini).
-   * - Screenshot URL: Gemini MUST extract a TX id before verify.
+   * - Screenshot URL: Gemini detects bank + extracts TX; rejects method mismatch.
+   * Only `verified` outcomes are acceptable for placing/confirming payment.
    */
   async verifyEvidence(
     paymentMethod: 'bank' | 'telebirr',
     referenceCode: string,
     expectedAmount: number,
     excludeOrderId?: string,
+    _customerIdForWarn?: string,
   ) {
     const raw = (referenceCode || '').trim();
     if (!raw) {
@@ -777,30 +792,75 @@ export class OrderService {
       );
     }
 
+    if (!(expectedAmount > 0)) {
+      throw new BadRequestException(
+        'Expected payment amount is invalid. Please refresh and try again.',
+      );
+    }
+
     let extractedTxId: string;
 
     if (/^https?:\/\//i.test(raw)) {
-      let ext: string | null = null;
+      let receipt: Awaited<
+        ReturnType<GeminiService['extractReceiptPayment']>
+      >;
       try {
-        ext = await this.geminiService.extractTransactionNumber({
-          url: raw,
-          paymentMethod,
-        });
+        receipt = await this.geminiService.extractReceiptPayment({ url: raw });
       } catch (err) {
-        this.logger.warn(`Failed to extract TX ID from screenshot: ${err}`);
-      }
-      if (!ext) {
+        this.logger.warn(`Failed to extract receipt from screenshot: ${err}`);
         throw new BadRequestException(
-          'Could not read a transaction number from the screenshot. Please paste the transaction ID instead.',
+          'Could not read the receipt screenshot. Please paste the transaction number instead. No order was placed.',
         );
       }
-      extractedTxId = this.normalizeTxId(ext, paymentMethod);
-      this.logger.log(`Extracted TX ID: ${extractedTxId} from screenshot.`);
+
+      if (!receipt.transactionNumber) {
+        throw new BadRequestException(
+          'Could not read a transaction number from the screenshot. Please paste the transaction ID instead. No order was placed.',
+        );
+      }
+
+      const detectedMethod =
+        receipt.bank === 'cbe'
+          ? 'bank'
+          : receipt.bank === 'telebirr'
+            ? 'telebirr'
+            : null;
+
+      if (detectedMethod && detectedMethod !== paymentMethod) {
+        throw new BadRequestException(
+          paymentMethod === 'telebirr'
+            ? 'This looks like a CBE receipt. Select CBE Bank, or upload a Telebirr screenshot. No order was placed.'
+            : 'This looks like a Telebirr receipt. Select Telebirr, or upload a CBE screenshot. No order was placed.',
+        );
+      }
+
+      if (
+        !detectedMethod &&
+        /^FT[A-Z0-9]+$/i.test(receipt.transactionNumber) &&
+        paymentMethod === 'telebirr'
+      ) {
+        throw new BadRequestException(
+          'This transaction looks like a CBE FT reference, but you selected Telebirr. Select CBE Bank or upload a Telebirr receipt. No order was placed.',
+        );
+      }
+
+      extractedTxId = this.normalizeTxId(
+        receipt.transactionNumber,
+        paymentMethod,
+      );
+      this.logger.log(
+        `Extracted TX ID: ${extractedTxId} (detected bank=${receipt.bank}, confidence=${receipt.confidence})`,
+      );
     } else {
       extractedTxId = this.normalizeTxId(raw, paymentMethod);
       if (extractedTxId.length < 6) {
         throw new BadRequestException(
           'Transaction reference looks too short. Paste the full FT / Telebirr reference.',
+        );
+      }
+      if (/^FT/i.test(extractedTxId) && paymentMethod === 'telebirr') {
+        throw new BadRequestException(
+          'This looks like a CBE FT reference, but you selected Telebirr. Select CBE Bank instead. No order was placed.',
         );
       }
     }
@@ -847,26 +907,58 @@ export class OrderService {
     }
   }
 
-  /** Reject hard failures; allow verified (done) or queued (webhook/background). */
+  /** Reject anything except immediate verified — no pending placement. */
   private assertPaymentAcceptable(result: {
     outcome: string;
     failureReason?: string;
     requestId?: string;
   }): void {
     if (result.outcome === 'verified') return;
-    if (result.outcome === 'queued' && result.requestId) return;
 
     const friendly: Record<string, string> = {
       duplicate:
-        'This transaction was already used for another order. Each payment can only confirm one order.',
+        'This transaction was already used for another order. Each payment can only confirm one order. No order was placed.',
       queued:
-        'Payment verification is still pending. Please try again in a moment.',
+        'Bank verification is still processing. Please wait a moment and try again with the same receipt. No order was placed.',
+      amount_mismatch:
+        result.failureReason ||
+        'The amount paid is less than the required advance (including delivery). No order was placed.',
+      stale_payment:
+        result.failureReason ||
+        'This payment is older than 48 hours. Please make a new transfer for this order and submit that receipt. No order was placed.',
+      receiver_mismatch:
+        'Payment did not reach our account. Check you transferred to the correct CBE/Telebirr details. No order was placed.',
     };
     throw new BadRequestException(
       friendly[result.outcome] ||
         result.failureReason ||
-        `Payment could not be verified (${result.outcome}). Check the transaction ID and try again.`,
+        `Payment could not be verified (${result.outcome}). No order was placed.`,
     );
+  }
+
+  private async notifyCustomerVerificationFailed(
+    customerId: string,
+    reason: string,
+  ): Promise<void> {
+    try {
+      const customer = await this.customerRepository.findOne({
+        where: { id: customerId },
+      });
+      const telegramId = customer?.telegramId;
+      if (telegramId == null) return;
+
+      const clean = reason.replace(/\s+/g, ' ').trim().slice(0, 500);
+      const text =
+        `⚠️ *Payment verification failed*\n\n` +
+        `${clean}\n\n` +
+        `_No order was placed._ Please try again with the correct payment method and a valid receipt.`;
+
+      await this.telegramService.sendMessageSafe(String(telegramId), text, {
+        parse_mode: 'Markdown',
+      });
+    } catch (err) {
+      this.logger.warn(`Failed to send verification warning: ${err}`);
+    }
   }
 
   /**

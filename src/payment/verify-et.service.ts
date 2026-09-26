@@ -14,6 +14,7 @@ export type VerifyEtOutcome =
   | 'amount_mismatch' // ❌ Amount paid < expected advance
   | 'receiver_mismatch' // ❌ Money didn't reach our account
   | 'duplicate' // ❌ Transaction already used for another order
+  | 'stale_payment' // ❌ Transaction older than freshness window
   | 'queued' // ⏳ Bank still processing after poll timeout
   | 'unsupported' // ⚠️ Bank not supported
   | 'skipped'; // ⚠️ No API key configured
@@ -30,10 +31,12 @@ export interface VerifyEtResult {
 }
 
 const SYNC_WAIT_MS = 8_000;
-/** Short poll only when no webhook is configured */
-const POLL_MAX_ATTEMPTS_INLINE = 4;
+/** Poll while bank processes — spot verification before placing an order */
+const POLL_MAX_ATTEMPTS_PLACEMENT = 20;
 const POLL_MAX_ATTEMPTS_BACKGROUND = 40;
 const POLL_DEFAULT_INTERVAL_MS = 1_500;
+/** Reject transfers older than this (stops reusing old receipts) */
+const PAYMENT_FRESHNESS_MS = 48 * 60 * 60 * 1000;
 
 @Injectable()
 export class VerifyEtService {
@@ -128,7 +131,7 @@ export class VerifyEtService {
       const requestId =
         typeof json.requestId === 'string' ? json.requestId : undefined;
 
-      // 202 Queued — return fast when webhook can finish later; else short poll
+      // 202 Queued — poll until done so orders are only placed when verified
       if (res.status === 202) {
         this.logger.log(
           `Verify.ET queued: requestId=${requestId ?? 'unknown'}`,
@@ -142,22 +145,11 @@ export class VerifyEtService {
           };
         }
 
-        if (this.webhookUrl) {
-          // Checkout returns immediately; webhook + background poll finish it
-          return {
-            outcome: 'queued',
-            requestId,
-            rawResponse: json,
-            failureReason:
-              'Payment is being verified with the bank. This usually takes a few seconds.',
-          };
-        }
-
         return this.pollUntilDone(
           requestId,
           request.expectedAmount,
           json,
-          POLL_MAX_ATTEMPTS_INLINE,
+          POLL_MAX_ATTEMPTS_PLACEMENT,
         );
       }
 
@@ -306,7 +298,17 @@ export class VerifyEtService {
       };
     }
 
-    if (amount > 0 && amount < expectedAmount - 1) {
+    // Fail closed: bank must report a positive amount
+    if (!(amount > 0)) {
+      return {
+        ...base,
+        outcome: 'amount_mismatch',
+        failureReason:
+          'Bank did not report a payment amount. Please try again in a moment or paste the transaction number.',
+      };
+    }
+
+    if (amount < expectedAmount - 1) {
       return {
         ...base,
         outcome: 'amount_mismatch',
@@ -314,7 +316,65 @@ export class VerifyEtService {
       };
     }
 
+    const txnTime = this.extractTxnTime(data, json);
+    if (!txnTime) {
+      return {
+        ...base,
+        outcome: 'stale_payment',
+        failureReason:
+          'Could not confirm when this payment was made. Please use a new transfer (within 48 hours) and try again. No order was placed.',
+      };
+    }
+    const ageMs = Date.now() - txnTime.getTime();
+    // Allow small clock skew into the future
+    if (ageMs < -15 * 60 * 1000) {
+      return {
+        ...base,
+        outcome: 'stale_payment',
+        failureReason:
+          'Payment timestamp looks invalid. Please try again with a fresh transfer. No order was placed.',
+      };
+    }
+    if (ageMs > PAYMENT_FRESHNESS_MS) {
+      const hours = Math.round(ageMs / (60 * 60 * 1000));
+      return {
+        ...base,
+        outcome: 'stale_payment',
+        failureReason: `This payment is about ${hours} hours old. Transfers must be made within 48 hours of placing the order. Please pay again and submit the new receipt. No order was placed.`,
+      };
+    }
+
     return { ...base, outcome: 'verified' };
+  }
+
+  /** Prefer Verify.ET `timestamp` / common bank date fields. */
+  private extractTxnTime(
+    data: Record<string, unknown>,
+    envelope: Record<string, unknown>,
+  ): Date | null {
+    const candidates: unknown[] = [
+      data.timestamp,
+      data.transactionDate,
+      data.transactionTime,
+      data.date,
+      data.paidAt,
+      data.createdAt,
+      (data.transaction as Record<string, unknown> | undefined)?.timestamp,
+      (data.transaction as Record<string, unknown> | undefined)?.date,
+      envelope.timestamp,
+    ];
+    for (const raw of candidates) {
+      if (raw == null || raw === '') continue;
+      if (typeof raw === 'number' && Number.isFinite(raw)) {
+        // seconds vs ms
+        const ms = raw < 1e12 ? raw * 1000 : raw;
+        const d = new Date(ms);
+        if (!Number.isNaN(d.getTime())) return d;
+      }
+      const d = new Date(String(raw));
+      if (!Number.isNaN(d.getTime())) return d;
+    }
+    return null;
   }
 
   private unwrapData(

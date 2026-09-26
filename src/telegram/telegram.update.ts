@@ -2147,9 +2147,10 @@ export class TelegramUpdate {
       `${session.productName} × ${qty}\n`+
       `${locationLine}\n`+
       `Expected: ${expectedDate}\n`+
-      `Pay now (50%): *${advance.toFixed(2)} ETB*\n\n`+
-      `CBE: \`${bank.accountNumber}\`(${bank.accountName})\n`+
-      `Telebirr: \`${telebirr.phoneNumber}\`\n\n`+
+      `Pay now (50%): *${advance.toFixed(2)} ETB*\n` +
+      `_Pay within 48 hours — older receipts are rejected._\n\n` +
+      `CBE: \`${bank.accountNumber}\`(${bank.accountName})\n` +
+      `Telebirr: \`${telebirr.phoneNumber}\`\n\n` +
       `How did you pay?`;
 
     await ctx.reply(message, {
@@ -2239,34 +2240,66 @@ export class TelegramUpdate {
 
     try {
       const quantity = session.quantity ?? 1;
-      const total = session.totalCost ?? session.cost * quantity;
-      const advance = session.advancePaymentAmount ?? total * 0.5;
+      const deliveryFee = Number(session.deliveryFee) || 0;
+      const subtotal = session.cost * quantity;
+      const total =
+        session.totalCost ?? Math.round((subtotal + deliveryFee) * 100) / 100;
+      const advance =
+        session.advancePaymentAmount ??
+        Math.round(total * 0.5 * 100) / 100;
 
-      const v = await this.orderService.verifyEvidence(
-        paymentMethod as 'bank'| 'telebirr',
-        paymentEvidence,
-        advance,
-      );
-
-      const verifyResult = v.result;
-      if (
-        verifyResult.outcome !== 'verified'&&
-        !(verifyResult.outcome === 'queued'&& verifyResult.requestId)
-      ) {
-        throw new Error(
-          verifyResult.failureReason ||
-            `Payment could not be verified (${verifyResult.outcome})`,
+      let v: Awaited<ReturnType<OrderService['verifyEvidence']>>;
+      try {
+        v = await this.orderService.verifyEvidence(
+          paymentMethod as 'bank' | 'telebirr',
+          paymentEvidence,
+          advance,
+          undefined,
+          session.customerId,
         );
+      } catch (verifyErr) {
+        let msg =
+          verifyErr instanceof Error ? verifyErr.message : String(verifyErr);
+        if (
+          verifyErr &&
+          typeof verifyErr === 'object' &&
+          'getResponse' in verifyErr &&
+          typeof (verifyErr as { getResponse: () => unknown }).getResponse ===
+            'function'
+        ) {
+          const body = (
+            verifyErr as { getResponse: () => unknown }
+          ).getResponse();
+          if (typeof body === 'string') msg = body;
+          else if (body && typeof body === 'object' && 'message' in body) {
+            const m = (body as { message: string | string[] }).message;
+            msg = Array.isArray(m) ? m.join(' ') : String(m);
+          }
+        }
+        await ctx.reply(
+          `⚠️ Payment verification failed\n\n${msg}\n\nNo order was placed. Please try again with the correct method and receipt.`,
+          { reply_markup: this.userKeyboard(ctx.from?.id) },
+        );
+        return;
       }
 
-      const isVerified = verifyResult.outcome === 'verified';
-      const paid = isVerified
-        ? this.orderService.resolvePaidFromAmount(
-            verifyResult.amount,
-            advance,
-            total,
-          )
-        : { paymentStage: 'unpaid' as const, amountPaid: 0 };
+      const verifyResult = v.result;
+      if (verifyResult.outcome !== 'verified') {
+        const reason =
+          verifyResult.failureReason ||
+          `Payment could not be verified (${verifyResult.outcome}). No order was placed.`;
+        await ctx.reply(
+          `⚠️ Payment verification failed\n\n${reason}\n\nPlease try again.`,
+          { reply_markup: this.userKeyboard(ctx.from?.id) },
+        );
+        return;
+      }
+
+      const paid = this.orderService.resolvePaidFromAmount(
+        verifyResult.amount,
+        advance,
+        total,
+      );
 
       const order = await this.orderService.create({
         customerId: session.customerId,
@@ -2277,10 +2310,10 @@ export class TelegramUpdate {
         deliveryLat: session.deliveryLat ?? null,
         deliveryLon: session.deliveryLon ?? null,
         deliveryDistanceKm: session.deliveryDistanceKm ?? null,
-        status: isVerified ? 'confirmed': 'payment_submitted',
+        status: 'confirmed',
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
-        deliveryFee: session.deliveryFee ?? 0,
+        deliveryFee,
         expectedDeliveryDate: tomorrow,
         advancePaymentAmount: advance,
         amountPaid: paid.amountPaid,
@@ -2288,7 +2321,7 @@ export class TelegramUpdate {
         paymentMethod,
         paymentEvidence: v.extractedTxId,
         paymentSubmittedAt: new Date(),
-        paymentVerifiedAt: isVerified ? new Date() : null,
+        paymentVerifiedAt: new Date(),
         balanceVerifiedAt:
           paid.paymentStage === 'full' ? new Date() : null,
         verifyEtRequestId: verifyResult.requestId ?? null,
@@ -2308,12 +2341,8 @@ export class TelegramUpdate {
           : session.deliveryAddress || 'Your location';
 
       const remaining = Math.max(0, total - paid.amountPaid);
-      const summary = !isVerified
-        ? `*Order placed — verifying payment*\n\n` +
-          `Prepayment: *${advance.toFixed(2)} ETB*\n` +
-          `Expected: *${expectedDate}*\n` +
-          `${location}\n\nWe'll message you when payment is confirmed.`
-        : paid.paymentStage === 'full'
+      const summary =
+        paid.paymentStage === 'full'
           ? `*Order confirmed — fully paid*\n\n` +
             `Paid: *${paid.amountPaid.toFixed(2)} ETB*\n` +
             `Expected: *${expectedDate}*\n` +
@@ -2325,7 +2354,7 @@ export class TelegramUpdate {
             `${location}`;
 
       const inlineRows: { text: string; callback_data: string }[][] = [];
-      if (isVerified && paid.paymentStage === 'partial' && remaining > 0.01) {
+      if (paid.paymentStage === 'partial' && remaining > 0.01) {
         inlineRows.push([
           {
             text: `Pay remaining ${remaining.toFixed(2)} ETB`,
@@ -2344,14 +2373,6 @@ export class TelegramUpdate {
         parse_mode: 'Markdown',
         reply_markup: { inline_keyboard: inlineRows },
       });
-
-      if (!isVerified) {
-        this.orderService.scheduleFinishQueuedVerification(
-          [order],
-          advance,
-          total,
-        );
-      }
 
       await ctx.reply(`Need help? ${supportPhone}`, {
         reply_markup: this.userKeyboard(ctx.from?.id),
@@ -2378,12 +2399,8 @@ export class TelegramUpdate {
         }
       }
       this.logger.error(`Failed to create order: ${msg}`);
-      const isVerifyFail =
-        /verif|transaction|receipt|screenshot|reference|paid|bank/i.test(msg);
       await ctx.reply(
-        isVerifyFail
-          ? `Payment verification failed:\n${msg}\n\nPlease paste the correct transaction ID or send a clearer receipt screenshot.`
-          : `Sorry, we couldn't place your order. Please try again.`,
+        `⚠️ Payment verification failed\n\n${msg}\n\nNo order was placed.`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
     }
