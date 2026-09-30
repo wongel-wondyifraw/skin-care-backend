@@ -297,18 +297,17 @@ export class GeminiService {
     const groqProducts = products.slice(0, GROQ_CATALOG_LIMIT);
     const groqNames = groqProducts.map((p) => p.name).join(', ');
     const groqPrompt =
-      `Facial skincare observation for Medaf Skin Care. Photo already quality-checked.\n` +
-      `Skin type: ${skinType}\n\n` +
-      `Write short plain text (no markdown):\n` +
+      `Medaf facial skincare note. Skin: ${skinType}\n` +
+      `Plain text only:\n` +
       `Observed\n` +
-      `- max 3 short findings (region if useful)\n` +
+      `- max 3 short findings\n` +
       `Recommendations\n` +
-      `- Exact Product Name — one short benefit\n` +
-      `- Exact Product Name — one short benefit\n\n` +
-      `Use ONLY these products (2–3 max): ${groqNames || 'none'}\n` +
-      `Do not invent products. Not a medical diagnosis. Keep under 120 words.` +
+      `- Exact Product Name — short benefit\n` +
+      `- Exact Product Name — short benefit\n` +
+      `ONLY these products (2–3): ${groqNames || 'none'}\n` +
+      `No invented products. Not medical. Max 80 words EN.` +
       (includeAmharic
-        ? `\nThen --- and a short Amharic section; keep product names in English.`
+        ? `\nAfter --- reply in Ge'ez Amharic only (same 2 sections). Keep product names + SPF/serum/etc in English. No Latinized Amharic. Max 6 short bullets total.`
         : '');
 
     try {
