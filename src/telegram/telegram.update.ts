@@ -56,6 +56,9 @@ export class TelegramUpdate {
   private readonly orderSessions = new OrderSessionStore();
   private readonly catalogSessions = new CatalogBrowseSessionStore();
   private readonly scanSessions = new ScanSessionStore();
+  /** Recent Telegram update_ids so webhook retries do not re-run face scan. */
+  private readonly recentScanUpdateIds = new Map<number, number>();
+  private static readonly SCAN_UPDATE_TTL_MS = 15 * 60 * 1000;
 
   constructor(
     private readonly skinTypeService: SkinTypeService,
@@ -1449,20 +1452,96 @@ export class TelegramUpdate {
     );
   }
 
+  private pruneRecentScanUpdateIds(now = Date.now()): void {
+    const cutoff = now - TelegramUpdate.SCAN_UPDATE_TTL_MS;
+    for (const [id, seenAt] of this.recentScanUpdateIds) {
+      if (seenAt < cutoff) this.recentScanUpdateIds.delete(id);
+    }
+  }
+
+  /** True if this update was already accepted (webhook retry). */
+  private markScanUpdateSeen(updateId: number | undefined): boolean {
+    if (updateId == null) return false;
+    this.pruneRecentScanUpdateIds();
+    if (this.recentScanUpdateIds.has(updateId)) return true;
+    this.recentScanUpdateIds.set(updateId, Date.now());
+    return false;
+  }
+
+  private isScanJobActive(chatId: string, jobToken: number): boolean {
+    const s = this.scanSessions.get(chatId);
+    return !!s && s.jobToken === jobToken;
+  }
+
   private async handleScanPhoto(ctx: Context, chatId: string) {
     const session = this.scanSessions.get(chatId);
     if (!session) return;
 
+    const updateId = ctx.update?.update_id;
+    if (this.markScanUpdateSeen(updateId)) {
+      this.logger.log(
+        `Ignoring duplicate face-scan update_id=${updateId} for chatId=${chatId}`,
+      );
+      return;
+    }
+
+    if (session.inProgress) {
+      this.logger.log(
+        `Face scan already in progress for chatId=${chatId}; ignoring new photo`,
+      );
+      return;
+    }
+
     const msg = ctx.message as Message.PhotoMessage;
     const best = msg.photo[msg.photo.length - 1];
+    const fileId = best.file_id;
+    const customerId = session.customerId;
+    const telegramUserId = ctx.from?.id;
+    const jobToken = (session.jobToken ?? 0) + 1;
+    session.inProgress = true;
+    session.jobToken = jobToken;
 
     await ctx.reply(`Looking at your photo… this may take a few seconds.`);
+
+    // Return from the Telegraf handler immediately so the webhook can 200
+    // before Gemini/Groq finish (avoids 90s TimeoutError + Telegram retries).
+    void this.runFaceScanJob({
+      ctx,
+      chatId,
+      customerId,
+      fileId,
+      jobToken,
+      telegramUserId,
+    }).catch((err) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(
+        `Unhandled face scan job error chatId=${chatId}: ${msg}`,
+      );
+    });
+  }
+
+  private async runFaceScanJob(opts: {
+    ctx: Context;
+    chatId: string;
+    customerId: string;
+    fileId: string;
+    jobToken: number;
+    telegramUserId?: number;
+  }) {
+    const { ctx, chatId, customerId, fileId, jobToken, telegramUserId } = opts;
+
+    const clearInProgress = () => {
+      const s = this.scanSessions.get(chatId);
+      if (s && s.jobToken === jobToken) {
+        s.inProgress = false;
+      }
+    };
 
     try {
       let buffer: Buffer;
       let mimeType = 'image/jpeg';
       try {
-        const fileLink = await ctx.telegram.getFileLink(best.file_id);
+        const fileLink = await ctx.telegram.getFileLink(fileId);
         const res = await fetch(fileLink.href, {
           headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
           signal: AbortSignal.timeout(25_000),
@@ -1483,7 +1562,9 @@ export class TelegramUpdate {
         throw new Error(`Telegram file download failed: ${dlMsg}`);
       }
 
-      const customer = await this.customerService.findOne(session.customerId);
+      if (!this.isScanJobActive(chatId, jobToken)) return;
+
+      const customer = await this.customerService.findOne(customerId);
       const allProducts = await this.productService.findCatalogForAdvice();
       const userSkinType = customer.skinType?.name || null;
 
@@ -1511,7 +1592,10 @@ export class TelegramUpdate {
         products: filteredProducts,
       });
 
+      if (!this.isScanJobActive(chatId, jobToken)) return;
+
       if (!analysis.usable) {
+        clearInProgress();
         await ctx.reply(
           analysis.retryMessage ||
             `Please send a clearer front-facing photo in good light — one face, no heavy filter.`,
@@ -1559,6 +1643,8 @@ export class TelegramUpdate {
         );
       }
 
+      if (!this.isScanJobActive(chatId, jobToken)) return;
+
       this.scanSessions.delete(chatId);
 
       const maxLength = 4000;
@@ -1603,20 +1689,30 @@ export class TelegramUpdate {
         `This is observational advice only — not a medical diagnosis.`,
         {
           reply_markup: this.adminSessions.isAuthenticated(chatId)
-            ? this.adminKeyboard(ctx.from?.id)
-            : this.userKeyboard(ctx.from?.id),
+            ? this.adminKeyboard(telegramUserId)
+            : this.userKeyboard(telegramUserId),
         },
       );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Face scan failed for chatId=${chatId}: ${msg}`);
+      if (!this.isScanJobActive(chatId, jobToken)) return;
+      clearInProgress();
       const kind = classifyFaceScanError(err);
-      await ctx.reply(messageForInfraKind(kind), {
-        reply_markup: {
-          keyboard: [[{ text: 'Back' }]],
-          resize_keyboard: true,
-        },
-      });
+      try {
+        await ctx.reply(messageForInfraKind(kind), {
+          reply_markup: {
+            keyboard: [[{ text: 'Back' }]],
+            resize_keyboard: true,
+          },
+        });
+      } catch (replyErr) {
+        const rMsg =
+          replyErr instanceof Error ? replyErr.message : String(replyErr);
+        this.logger.warn(
+          `Face scan error reply failed chatId=${chatId}: ${rMsg}`,
+        );
+      }
     }
   }
 

@@ -216,6 +216,10 @@ export class CatalogBrowseSessionStore {
 export interface ScanSession {
   step: 'awaiting_scan_photo';
   customerId: string;
+  /** True while download/AI runs in the background (webhook already acked). */
+  inProgress?: boolean;
+  /** Bumped per photo job; stale jobs skip replies after Back / newer photo. */
+  jobToken?: number;
 }
 
 export class ScanSessionStore {
