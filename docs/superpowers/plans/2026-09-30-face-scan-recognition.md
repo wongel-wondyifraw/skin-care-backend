@@ -10,7 +10,7 @@
 
 ```
 GROQ_API_KEY=          # https://console.groq.com → API Keys (gsk_…)
-GROQ_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+GROQ_MODEL=qwen/qwen3.8-27b
 GEMINI_FALLBACK_MODEL=gemini-2.0-flash
 ```
 

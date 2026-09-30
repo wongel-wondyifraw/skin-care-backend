@@ -16,8 +16,7 @@ export class GroqService {
   constructor(private readonly config: ConfigService) {
     this.apiKey = this.config.get<string>('GROQ_API_KEY', '').trim();
     this.model =
-      this.config.get<string>('GROQ_MODEL')?.trim() ||
-      'meta-llama/llama-4-scout-17b-16e-instruct';
+      this.config.get<string>('GROQ_MODEL')?.trim() || 'qwen/qwen3.8-27b';
   }
 
   isConfigured(): boolean {
