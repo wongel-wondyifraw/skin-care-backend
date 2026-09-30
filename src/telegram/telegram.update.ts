@@ -28,6 +28,10 @@ import {
   RegistrationSessionStore,
   ScanSessionStore,
 } from './registration.session.js';
+import {
+  classifyFaceScanError,
+  messageForInfraKind,
+} from './face-scan-messages.js';
 
 const CATALOG_PAGE_SIZE = 8;
 const MAX_PRODUCT_CARDS = 3;
@@ -1441,21 +1445,29 @@ export class TelegramUpdate {
     await ctx.reply(`Looking at your photo… this may take a few seconds.`);
 
     try {
-      const fileLink = await ctx.telegram.getFileLink(best.file_id);
-      const res = await fetch(fileLink.href, {
-        headers: { 'User-Agent': 'MedafSkinCareBot/1.0'},
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!res.ok) throw new Error(`Telegram file HTTP ${res.status}`);
-      const buffer = Buffer.from(await res.arrayBuffer());
-      if (!buffer.length) throw new Error('Empty photo');
+      let buffer: Buffer;
+      let mimeType = 'image/jpeg';
+      try {
+        const fileLink = await ctx.telegram.getFileLink(best.file_id);
+        const res = await fetch(fileLink.href, {
+          headers: { 'User-Agent': 'MedafSkinCareBot/1.0' },
+          signal: AbortSignal.timeout(25_000),
+        });
+        if (!res.ok) throw new Error(`Telegram file HTTP ${res.status}`);
+        buffer = Buffer.from(await res.arrayBuffer());
+        if (!buffer.length) throw new Error('Empty photo');
 
-      const path = fileLink.pathname.toLowerCase();
-      const mimeType = path.endsWith('.png')
-        ? 'image/png'
-        : path.endsWith('.webp')
-          ? 'image/webp'
-          : 'image/jpeg';
+        const path = fileLink.pathname.toLowerCase();
+        mimeType = path.endsWith('.png')
+          ? 'image/png'
+          : path.endsWith('.webp')
+            ? 'image/webp'
+            : 'image/jpeg';
+      } catch (dlErr) {
+        const dlMsg =
+          dlErr instanceof Error ? dlErr.message : String(dlErr);
+        throw new Error(`Telegram file download failed: ${dlMsg}`);
+      }
 
       const customer = await this.customerService.findOne(session.customerId);
       const allProducts = await this.productService.findCatalogForAdvice();
@@ -1491,7 +1503,7 @@ export class TelegramUpdate {
             `Please send a clearer front-facing photo in good light — one face, no heavy filter.`,
           {
             reply_markup: {
-              keyboard: [[{ text: 'Back'}]],
+              keyboard: [[{ text: 'Back' }]],
               resize_keyboard: true,
             },
           },
@@ -1499,18 +1511,38 @@ export class TelegramUpdate {
         return;
       }
 
-      const uploaded = await this.cloudinaryService.uploadBuffer(buffer, {
-        folder: 'medaf_skincare_scans',
-        filename: `scan-${customer.id}`,
-      });
+      let imageUrl = '';
+      let assetId: string | null = null;
+      try {
+        const uploaded = await this.cloudinaryService.uploadBuffer(buffer, {
+          folder: 'medaf_skincare_scans',
+          filename: `scan-${customer.id}`,
+        });
+        imageUrl = uploaded.secure_url;
+        assetId = uploaded.asset_id || uploaded.public_id;
+      } catch (uploadErr) {
+        const uMsg =
+          uploadErr instanceof Error ? uploadErr.message : String(uploadErr);
+        this.logger.warn(
+          `Face scan Cloudinary upload failed (continuing with advice): ${uMsg}`,
+        );
+      }
 
-      await this.skinAnalysisService.create({
-        customerId: customer.id,
-        imageUrl: uploaded.secure_url,
-        assetId: uploaded.asset_id || uploaded.public_id,
-        adviceText: analysis.text,
-        mentionedProductIds: analysis.mentionedProducts.map((p) => p.id),
-      });
+      try {
+        await this.skinAnalysisService.create({
+          customerId: customer.id,
+          imageUrl: imageUrl || 'pending',
+          assetId: assetId || 'pending',
+          adviceText: analysis.text,
+          mentionedProductIds: analysis.mentionedProducts.map((p) => p.id),
+        });
+      } catch (saveErr) {
+        const sMsg =
+          saveErr instanceof Error ? saveErr.message : String(saveErr);
+        this.logger.warn(
+          `Face scan save failed (still sending advice): ${sMsg}`,
+        );
+      }
 
       this.scanSessions.delete(chatId);
 
@@ -1563,15 +1595,13 @@ export class TelegramUpdate {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       this.logger.error(`Face scan failed for chatId=${chatId}: ${msg}`);
-      await ctx.reply(
-        `Sorry, we could not analyze that photo. Please try again with a clearer image.`,
-        {
-          reply_markup: {
-            keyboard: [[{ text: 'Back'}]],
-            resize_keyboard: true,
-          },
+      const kind = classifyFaceScanError(err);
+      await ctx.reply(messageForInfraKind(kind), {
+        reply_markup: {
+          keyboard: [[{ text: 'Back' }]],
+          resize_keyboard: true,
         },
-      );
+      });
     }
   }
 

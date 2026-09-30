@@ -2,6 +2,22 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { Product } from '../product/product.entity.js';
+import {
+  messageForRejectCode,
+  normalizeRejectCode,
+} from './face-scan-messages.js';
+import {
+  prepareFaceScanImage,
+  runFaceScanPreflight,
+} from './face-scan-preflight.js';
+import type {
+  FaceScanGateJson,
+  FaceScanRejectCode,
+  FaceScanResult,
+} from './face-scan.types.js';
+
+/** Cap inventory sent to vision analysis (in-stock preferred). */
+const SCAN_CATALOG_LIMIT = 40;
 
 @Injectable()
 export class GeminiService {
@@ -9,6 +25,7 @@ export class GeminiService {
   private readonly genAI: GoogleGenerativeAI;
   private readonly model: any;
   private readonly scanModel: any;
+  private readonly scanGateModel: any;
   private readonly receiptModel: any;
 
   constructor(private readonly config: ConfigService) {
@@ -16,7 +33,7 @@ export class GeminiService {
     if (!apiKey) throw new Error('GEMINI_API_KEY is missing from .env');
 
     const modelName =
-      this.config.get<string>('GEMINI_MODEL') || 'gemini-1.5-flash';
+      this.config.get<string>('GEMINI_MODEL') || 'gemini-2.0-flash';
 
     this.genAI = new GoogleGenerativeAI(apiKey);
 
@@ -29,6 +46,20 @@ export class GeminiService {
         'step that is not explicitly provided in the user inventory context. ' +
         'Keep answers minimal: short bullets only, never long paragraphs.',
       generationConfig: { temperature: 0.1, topP: 0.8 },
+    });
+
+    this.scanGateModel = this.genAI.getGenerativeModel({
+      model: modelName,
+      systemInstruction:
+        'You are a strict photo-quality gate for facial skincare analysis. ' +
+        'Accept any photo where facial skin is at least partially visible. ' +
+        'Reject only extreme cases: no face, pitch black, extreme blur, or fully obscured face. ' +
+        'Always reply with JSON only.',
+      generationConfig: {
+        temperature: 0.1,
+        topP: 0.8,
+        responseMimeType: 'application/json',
+      },
     });
 
     this.scanModel = this.genAI.getGenerativeModel({
@@ -165,39 +196,53 @@ export class GeminiService {
     mimeType: string;
     userSkinType: string | null;
     products: Product[];
-  }): Promise<{
-    usable: boolean;
-    retryMessage?: string;
-    text: string;
-    mentionedProducts: Product[];
-  }> {
+  }): Promise<FaceScanResult> {
+    const preflight = await runFaceScanPreflight(input.imageBuffer);
+    if (!preflight.ok) {
+      return {
+        usable: false,
+        code: preflight.code,
+        retryMessage: preflight.retryMessage,
+        text: preflight.retryMessage,
+        mentionedProducts: [],
+      };
+    }
+
+    const prepared = await prepareFaceScanImage(
+      input.imageBuffer,
+      input.mimeType || 'image/jpeg',
+    );
+
+    const gate = await this.runFaceScanGate(prepared.buffer, prepared.mimeType);
+    if (!gate.usable) {
+      const code = normalizeRejectCode(gate.code);
+      const retryMessage = messageForRejectCode(code);
+      return {
+        usable: false,
+        code,
+        retryMessage,
+        text: retryMessage,
+        mentionedProducts: [],
+      };
+    }
+
     const skinType = input.userSkinType || 'Not specified';
     const includeAmharic =
       (this.config.get<string>('AMHARIC_TRANSLATION') || '').toLowerCase() ===
       'true';
-    const products = input.products ?? [];
+    const products = this.trimCatalogForScan(input.products ?? []);
     const exactProductNames = products.map((p) => `"${p.name}"`).join(', ');
     const productList = this.formatProductInventory(products);
 
     let prompt =
-      `You are analyzing a customer's facial photo for Medaf Skin Care.\n\n` +
-      `STEP 1 — PHOTO QUALITY GATE:\n` +
-      `Reject the photo ONLY if it is completely impossible to analyze the skin:\n` +
-      `- Not a human face, extremely blurry, entirely pitch black, or obscured by heavy opaque masks.\n` +
-      `- Do NOT reject for minor things like a cropped forehead, shadows, everyday makeup, non-ideal lighting, glasses, or partial face.\n` +
-      `- If you can see even some parts of the facial skin reasonably well, accept it.\n\n` +
-      `If rejected, reply with EXACTLY this format and nothing else before the message:\n` +
-      `PHOTO_UNCLEAR\n` +
-      `Then 1-3 short friendly sentences telling the user what to fix ` +
-      `(better light, front-facing, one face, closer, no filter).\n\n` +
-      `If the photo is usable, start with this exact first line:\n` +
-      `PHOTO_OK\n\n` +
-      `STEP 2 — VISUAL FINDINGS (only if PHOTO_OK):\n` +
+      `You are analyzing a customer's facial photo for Medaf Skin Care.\n` +
+      `The photo has already passed quality checks — analyze the visible facial skin.\n\n` +
+      `VISUAL FINDINGS:\n` +
       `List only clear visible concerns as short bullets (max 4 bullets).\n` +
       `Mention region when useful (forehead, cheeks, nose, chin, under-eye).\n` +
       `Possible concerns: dark spots, uneven tone, pimples/acne, redness, dryness, oiliness, pores, dark circles.\n` +
       `This is NOT a medical diagnosis. If severe, add one short line to see a dermatologist.\n\n` +
-      `STEP 3 — PRODUCT RECOMMENDATIONS:\n` +
+      `PRODUCT RECOMMENDATIONS:\n` +
       `Customer stated skin type: ${skinType}\n` +
       `Recommend ONLY products from this closed-world Medaf catalog (prefer 2–4 in-stock items).\n` +
       `EXACT ALLOWED PRODUCTS: [ ${exactProductNames || 'none'} ]\n\n` +
@@ -218,7 +263,7 @@ export class GeminiService {
 
     if (includeAmharic) {
       prompt +=
-        `\nBILINGUAL RESPONSE REQUIRED (after PHOTO_OK content):\n` +
+        `\nBILINGUAL RESPONSE REQUIRED:\n` +
         `- English section first in the bullet format above\n` +
         `- Then a line with only ---\n` +
         `- Then Amharic section with the SAME short bullet structure\n` +
@@ -230,42 +275,25 @@ export class GeminiService {
     }
 
     try {
-      const result = await this.scanModel.generateContent([
-        { text: prompt },
-        {
-          inlineData: {
-            mimeType: input.mimeType || 'image/jpeg',
-            data: input.imageBuffer.toString('base64'),
+      const rawText = await this.withGeminiRetry(async () => {
+        const result = await this.scanModel.generateContent([
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType: prepared.mimeType,
+              data: prepared.buffer.toString('base64'),
+            },
           },
-        },
-      ]);
-      const response = await result.response;
-      const rawText: string = String(response.text() || '');
-      const raw = this.cleanMarkdown(rawText);
-      const upperRaw = raw.toUpperCase();
+        ]);
+        const response = await result.response;
+        return String(response.text() || '');
+      });
 
-      const isUsable =
-        upperRaw.includes('PHOTO_OK') && !upperRaw.includes('PHOTO_UNCLEAR');
-
-      // Strip out the control flags to get just the text response
-      const rest = raw
+      let text = this.cleanMarkdown(rawText)
         .replace(/PHOTO_OK/gi, '')
         .replace(/PHOTO_UNCLEAR/gi, '')
         .trim();
 
-      if (!isUsable) {
-        const retryMessage =
-          rest ||
-          'Please send a clearer front-facing photo in good light — one face, no heavy filter.';
-        return {
-          usable: false,
-          retryMessage,
-          text: retryMessage,
-          mentionedProducts: [],
-        };
-      }
-
-      let text = rest || raw.replace(/^PHOTO_OK\s*/i, '').trim();
       if (products.length > 0) {
         text = this.validateAndSanitizeOutput(text, products);
       }
@@ -277,8 +305,148 @@ export class GeminiService {
       return { usable: true, text, mentionedProducts };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Gemini face scan error: ${msg}`);
-      throw new Error('Failed to analyze the photo. Please try again later.');
+      this.logger.error(`Gemini face scan analysis error: ${msg}`);
+      throw new Error(
+        `Failed to analyze the photo via Gemini: ${msg.slice(0, 200)}`,
+      );
+    }
+  }
+
+  /** Prefer in-stock items; cap size to reduce tokens / rate pressure. */
+  private trimCatalogForScan(products: Product[]): Product[] {
+    const inStock = products.filter((p) => Number(p.stock) > 0);
+    const pool = inStock.length > 0 ? inStock : products;
+    return pool.slice(0, SCAN_CATALOG_LIMIT);
+  }
+
+  private async runFaceScanGate(
+    buffer: Buffer,
+    mimeType: string,
+  ): Promise<{ usable: boolean; code?: FaceScanRejectCode }> {
+    const prompt =
+      `Decide if this photo can be used for light facial skincare observation.\n\n` +
+      `ACCEPT (usable=true) when:\n` +
+      `- A human face is visible enough to see some facial skin\n` +
+      `- Glasses, everyday makeup, soft shadows, cropped forehead, slight angle, or imperfect indoor light are OK\n` +
+      `- When unsure, ACCEPT\n\n` +
+      `REJECT (usable=false) ONLY for extremes:\n` +
+      `- no_face: no human face in frame\n` +
+      `- too_dark: pitch black / face completely invisible from darkness\n` +
+      `- too_blurry: extreme motion blur, face unrecognizable\n` +
+      `- not_a_person: object, animal, product, screenshot without a face\n` +
+      `- multiple_faces: several people; cannot focus on one face\n` +
+      `- obscured: heavy opaque mask/filter fully covering skin\n\n` +
+      `Examples:\n` +
+      `- Dim indoor selfie with visible cheeks → usable true\n` +
+      `- Black frame / pocket photo → usable false, code too_dark\n` +
+      `- Empty room / bottle only → usable false, code no_face\n\n` +
+      `Return ONLY JSON:\n` +
+      `{"usable":true|false,"code":"no_face"|"too_dark"|"too_blurry"|"not_a_person"|"multiple_faces"|"obscured"|null,"reason":"short"}`;
+
+    try {
+      const rawText = await this.withGeminiRetry(async () => {
+        const result = await this.scanGateModel.generateContent([
+          { text: prompt },
+          {
+            inlineData: {
+              mimeType,
+              data: buffer.toString('base64'),
+            },
+          },
+        ]);
+        const response = await result.response;
+        return String(response.text() || '');
+      });
+
+      const parsed = this.parseFaceScanGate(rawText);
+      if (!parsed) {
+        // Prefer accept on parse failure so we don't false-reject real selfies.
+        this.logger.warn(
+          `Face scan gate parse failed — accepting photo. Raw: ${rawText.slice(0, 120)}`,
+        );
+        return { usable: true };
+      }
+
+      if (parsed.usable) return { usable: true };
+
+      return {
+        usable: false,
+        code: normalizeRejectCode(parsed.code),
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.logger.error(`Gemini face scan gate error: ${msg}`);
+      throw new Error(
+        `Failed to analyze the photo via Gemini: ${msg.slice(0, 200)}`,
+      );
+    }
+  }
+
+  /** Exported for unit tests — parse gate JSON (or legacy PHOTO_* flags). */
+  parseFaceScanGate(raw: string): FaceScanGateJson | null {
+    const text = String(raw || '').trim();
+    if (!text) return null;
+
+    try {
+      const cleaned = text
+        .replace(/^```(?:json)?\s*/i, '')
+        .replace(/\s*```$/i, '')
+        .trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start >= 0 && end > start) {
+        const obj = JSON.parse(cleaned.slice(start, end + 1)) as Record<
+          string,
+          unknown
+        >;
+        const usable = Boolean(obj.usable);
+        return {
+          usable,
+          code: obj.code != null ? String(obj.code) : null,
+          reason: obj.reason != null ? String(obj.reason) : null,
+        };
+      }
+    } catch {
+      // fall through
+    }
+
+    const upper = text.toUpperCase();
+    if (upper.includes('PHOTO_UNCLEAR') && !upper.includes('PHOTO_OK')) {
+      return { usable: false, code: 'no_face', reason: 'legacy flag' };
+    }
+    if (upper.includes('PHOTO_OK')) {
+      return { usable: true, code: null, reason: null };
+    }
+
+    // If the model returned advice-like text without JSON, treat as usable.
+    if (
+      /observed|recommendation|skin|forehead|cheek|acne|spot/i.test(text) &&
+      text.length > 40
+    ) {
+      return { usable: true, code: null, reason: 'advice-like fallback' };
+    }
+
+    return null;
+  }
+
+  private async withGeminiRetry<T>(
+    fn: () => Promise<T>,
+    retries = 1,
+  ): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const transient =
+        /429|503|500|RESOURCE_EXHAUSTED|unavailable|timeout|ECONNRESET|fetch failed/i.test(
+          msg,
+        );
+      if (retries > 0 && transient) {
+        this.logger.warn(`Gemini transient error — retrying once: ${msg}`);
+        await new Promise((r) => setTimeout(r, 900));
+        return this.withGeminiRetry(fn, retries - 1);
+      }
+      throw err;
     }
   }
 
