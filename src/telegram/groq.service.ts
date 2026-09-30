@@ -39,8 +39,8 @@ export class GroqService {
     const body: Record<string, unknown> = {
       model: this.model,
       temperature: input.jsonMode ? 0.1 : 0.3,
-      // Free OTPM cap is ~1000; requesting 2048 triggers 429 before generation.
-      max_completion_tokens: input.jsonMode ? 256 : 512,
+      // Free OTPM cap is ~1000; keep under that. Analysis gets more room for EN detail.
+      max_completion_tokens: input.jsonMode ? 256 : 768,
       messages: [
         {
           role: 'user',

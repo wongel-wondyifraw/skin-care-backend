@@ -296,19 +296,17 @@ export class GeminiService {
 
     const groqProducts = products.slice(0, GROQ_CATALOG_LIMIT);
     const groqNames = groqProducts.map((p) => p.name).join(', ');
+    // Groq: English only (Amharic quality is poor); spend budget on clearer findings.
     const groqPrompt =
       `Medaf facial skincare note. Skin: ${skinType}\n` +
-      `Plain text only:\n` +
+      `English only. Plain text:\n` +
       `Observed\n` +
-      `- max 3 short findings\n` +
+      `- up to 4 findings; name region (forehead/cheeks/nose/chin/under-eye) when clear\n` +
       `Recommendations\n` +
-      `- Exact Product Name — short benefit\n` +
-      `- Exact Product Name — short benefit\n` +
+      `- Exact Product Name — one concrete benefit for this photo\n` +
+      `- Exact Product Name — one concrete benefit\n` +
       `ONLY these products (2–3): ${groqNames || 'none'}\n` +
-      `No invented products. Not medical. Max 80 words EN.` +
-      (includeAmharic
-        ? `\nAfter --- reply in Ge'ez Amharic only (same 2 sections). Keep product names + SPF/serum/etc in English. No Latinized Amharic. Max 6 short bullets total.`
-        : '');
+      `No invented products. Not medical. Max ~100 words.`;
 
     try {
       const rawText = await this.visionTextWithFallback({
