@@ -8,6 +8,7 @@ import {
 } from './face-scan-messages.js';
 import {
   prepareFaceScanImage,
+  prepareFaceScanImageForGroq,
   runFaceScanPreflight,
 } from './face-scan-preflight.js';
 import type {
@@ -17,8 +18,10 @@ import type {
 } from './face-scan.types.js';
 import { GroqService } from './groq.service.js';
 
-/** Cap inventory sent to vision analysis (in-stock preferred). */
+/** Cap inventory sent to Gemini vision analysis (in-stock preferred). */
 const SCAN_CATALOG_LIMIT = 40;
+/** Cap for Groq free-tier — names only to stay under ~7k ITPM with the image. */
+const GROQ_CATALOG_LIMIT = 12;
 
 @Injectable()
 export class GeminiService {
@@ -291,9 +294,27 @@ export class GeminiService {
         `- Do not invent awkward Amharic for technical words; prefer English\n`;
     }
 
+    const groqProducts = products.slice(0, GROQ_CATALOG_LIMIT);
+    const groqNames = groqProducts.map((p) => p.name).join(', ');
+    const groqPrompt =
+      `Facial skincare observation for Medaf Skin Care. Photo already quality-checked.\n` +
+      `Skin type: ${skinType}\n\n` +
+      `Write short plain text (no markdown):\n` +
+      `Observed\n` +
+      `- max 3 short findings (region if useful)\n` +
+      `Recommendations\n` +
+      `- Exact Product Name — one short benefit\n` +
+      `- Exact Product Name — one short benefit\n\n` +
+      `Use ONLY these products (2–3 max): ${groqNames || 'none'}\n` +
+      `Do not invent products. Not a medical diagnosis. Keep under 120 words.` +
+      (includeAmharic
+        ? `\nThen --- and a short Amharic section; keep product names in English.`
+        : '');
+
     try {
       const rawText = await this.visionTextWithFallback({
         prompt,
+        groqPrompt,
         imageBuffer: prepared.buffer,
         mimeType: prepared.mimeType,
         jsonMode: false,
@@ -454,11 +475,14 @@ export class GeminiService {
   }
 
   /**
-   * Face-scan vision only: Gemini (retry) → optional Gemini fallback model → Grok.
+   * Face-scan vision only: Gemini (retry) → optional Gemini fallback model → Groq.
    * Receipt OCR stays Gemini-only.
+   * Groq gets a smaller image (+ optional shorter prompt) to fit free ITPM limits.
    */
   private async visionTextWithFallback(opts: {
     prompt: string;
+    /** Shorter prompt for Groq free tier; defaults to prompt. */
+    groqPrompt?: string;
     imageBuffer: Buffer;
     mimeType: string;
     jsonMode: boolean;
@@ -525,11 +549,12 @@ export class GeminiService {
       }
 
       if (this.groqService.isConfigured()) {
-        this.logger.warn(`${opts.label}: falling back to Groq`);
+        this.logger.warn(`${opts.label}: falling back to Groq (slim payload)`);
+        const slim = await prepareFaceScanImageForGroq(opts.imageBuffer);
         return this.groqService.generateVisionText({
-          prompt: opts.prompt,
-          imageBuffer: opts.imageBuffer,
-          mimeType: opts.mimeType,
+          prompt: opts.groqPrompt ?? opts.prompt,
+          imageBuffer: slim.buffer,
+          mimeType: slim.mimeType,
           jsonMode: opts.jsonMode,
         });
       }

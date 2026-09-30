@@ -7,6 +7,8 @@ import {
 import {
   EXTREME_DARK_MEAN,
   MIN_PHOTO_BYTES,
+  prepareFaceScanImage,
+  prepareFaceScanImageForGroq,
   runFaceScanPreflight,
 } from './face-scan-preflight';
 import { GeminiService } from './gemini.service';
@@ -30,6 +32,11 @@ describe('face-scan-messages', () => {
     );
     expect(
       classifyFaceScanError(new Error('Failed to analyze via Gemini: 429')),
+    ).toBe('gemini');
+    expect(
+      classifyFaceScanError(
+        new Error('Groq API 413: Request too large ITPM Limit 7000'),
+      ),
     ).toBe('gemini');
     expect(classifyFaceScanError(new Error('Cloudinary upload failed'))).toBe(
       'storage',
@@ -82,6 +89,24 @@ describe('face-scan-preflight', () => {
     expect(lit.length).toBeGreaterThan(MIN_PHOTO_BYTES);
     const r = await runFaceScanPreflight(lit);
     expect(r.ok).toBe(true);
+  });
+
+  it('prepares a smaller JPEG for Groq than for Gemini', async () => {
+    const src = await sharp({
+      create: {
+        width: 1600,
+        height: 1200,
+        channels: 3,
+        background: { r: 120, g: 100, b: 90 },
+      },
+    })
+      .jpeg({ quality: 90 })
+      .toBuffer();
+
+    const gemini = await prepareFaceScanImage(src, 'image/jpeg');
+    const groq = await prepareFaceScanImageForGroq(src);
+    expect(groq.mimeType).toBe('image/jpeg');
+    expect(groq.buffer.length).toBeLessThan(gemini.buffer.length);
   });
 });
 

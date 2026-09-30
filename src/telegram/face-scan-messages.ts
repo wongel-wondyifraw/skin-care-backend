@@ -70,7 +70,7 @@ export function classifyFaceScanError(err: unknown): FaceScanInfraKind {
     return 'download';
   }
   if (
-    /gemini|analyze|RESOURCE_EXHAUSTED|429|503|500|quota|API key|generateContent/i.test(
+    /gemini|analyze|RESOURCE_EXHAUSTED|429|503|500|413|quota|API key|generateContent|Request too large|ITPM|high demand|Groq|Groq API/i.test(
       msg,
     )
   ) {

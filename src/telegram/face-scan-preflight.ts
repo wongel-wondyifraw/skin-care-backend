@@ -95,3 +95,22 @@ export async function prepareFaceScanImage(
     return { buffer, mimeType };
   }
 }
+
+/**
+ * Smaller JPEG for Groq free-tier ITPM limits (image ≈ 2k tokens alone).
+ * Keep Gemini on the larger prepareFaceScanImage output.
+ */
+export async function prepareFaceScanImageForGroq(
+  buffer: Buffer,
+): Promise<{ buffer: Buffer; mimeType: string }> {
+  try {
+    const out = await sharp(buffer)
+      .rotate()
+      .resize(640, 640, { fit: 'inside', withoutEnlargement: true })
+      .jpeg({ quality: 65 })
+      .toBuffer();
+    return { buffer: out, mimeType: 'image/jpeg' };
+  } catch {
+    return { buffer, mimeType: 'image/jpeg' };
+  }
+}
