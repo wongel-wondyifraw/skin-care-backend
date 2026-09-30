@@ -1190,10 +1190,53 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Facial scan photo ────────────────────────────────────────
-    if (this.scanSessions.has(chatId) && this.isPhotoMessage(ctx)) {
-      await this.handleScanPhoto(ctx, chatId);
-      return;
+    // ── Facial scan: Back / cancel MUST run before photo handling ─
+    if (this.scanSessions.has(chatId)) {
+      if (
+        this.menuEq(text, 'Back') ||
+        this.menuEq(text, 'Profile') ||
+        this.menuEq(text, 'Get Advice') ||
+        this.menuEq(text, 'Recommended') ||
+        this.menuEq(text, 'Products') ||
+        this.menuEq(text, 'My Orders')
+      ) {
+        this.scanSessions.delete(chatId);
+        if (this.menuEq(text, 'Back')) {
+          const replyMarkup = this.adminSessions.isAuthenticated(chatId)
+            ? this.adminKeyboard(ctx.from?.id)
+            : this.userKeyboard(ctx.from?.id);
+          await ctx.reply(`Scan cancelled. Main menu:`, {
+            reply_markup: replyMarkup,
+          });
+          return;
+        }
+        // Fall through so Profile / Products / etc. handlers run normally.
+      } else if (this.isPhotoMessage(ctx)) {
+        await this.handleScanPhoto(ctx, chatId);
+        return;
+      } else if (!text) {
+        await ctx.reply(
+          `Please send a clear face photo, or tap Back to cancel.`,
+          {
+            reply_markup: {
+              keyboard: [[{ text: 'Back' }]],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      } else if (!this.menuEq(text, 'Scan Face')) {
+        await ctx.reply(
+          `Send a photo of your face (not text), or tap Back to cancel.`,
+          {
+            reply_markup: {
+              keyboard: [[{ text: 'Back' }]],
+              resize_keyboard: true,
+            },
+          },
+        );
+        return;
+      }
     }
 
     // ── Order payment screenshot photo ───────────────────────────
@@ -1212,35 +1255,6 @@ export class TelegramUpdate {
     if (orderSession) {
       await this.handleOrderFlow(ctx, chatId, orderSession, text, message);
       return;
-    }
-
-    if (this.scanSessions.has(chatId)) {
-      if (
-        this.menuEq(text, 'Back')||
-        this.menuEq(text, 'Profile')||
-        this.menuEq(text, 'Get Advice')||
-        this.menuEq(text, 'Recommended')||
-        this.menuEq(text, 'Products')||
-        this.menuEq(text, 'Scan Face')
-      ) {
-        this.scanSessions.delete(chatId);
-      } else if (!text) {
-        await ctx.reply(
-          `Please send a clear face photo, or tap Back to cancel.`,
-          {
-            reply_markup: {
-              keyboard: [[{ text: 'Back'}]],
-              resize_keyboard: true,
-            },
-          },
-        );
-        return;
-      } else {
-        await ctx.reply(
-          `Send a photo of your face (not text), or tap Back to cancel.`,
-        );
-        return;
-      }
     }
 
     // ── Product search query ─────────────────────────────────────
@@ -1508,6 +1522,7 @@ export class TelegramUpdate {
             },
           },
         );
+        // Keep session so they can retry a photo; Back is handled before photo.
         return;
       }
 

@@ -16,6 +16,7 @@ import { SettingsModule } from '../settings/settings.module.js';
 import { PickupLocationModule } from '../pickup-location/pickup-location.module.js';
 import { CartModule } from '../cart/cart.module.js';
 import { GeminiService } from './gemini.service.js';
+import { GroqService } from './groq.service.js';
 import { LocationModule } from '../location/location.module.js';
 
 @Module({
@@ -61,6 +62,7 @@ import { LocationModule } from '../location/location.module.js';
     TelegramWebhookService,
     TelegramUpdate,
     GeminiService,
+    GroqService,
   ],
   controllers: [TelegramController],
   exports: [TelegramService, TelegramWebhookService, GeminiService],

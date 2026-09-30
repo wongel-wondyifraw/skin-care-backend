@@ -836,13 +836,13 @@ export class OrderService {
       } catch (err) {
         this.logger.warn(`Failed to extract receipt from screenshot: ${err}`);
         throw new BadRequestException(
-          'Could not read the receipt screenshot. Please paste the transaction number instead. No order was placed.',
+          'Screenshot verification is temporarily unavailable. Please paste your transaction number (CBE FT… or Telebirr ID) instead. No order was placed.',
         );
       }
 
-      if (!receipt.transactionNumber) {
+      if (receipt.screenshotUnavailable || !receipt.transactionNumber) {
         throw new BadRequestException(
-          'Could not read a transaction number from the screenshot. Please paste the transaction ID instead. No order was placed.',
+          'Screenshot verification is temporarily unavailable. Please paste your transaction number (CBE FT… or Telebirr ID) instead. No order was placed.',
         );
       }
 

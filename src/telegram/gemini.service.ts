@@ -15,6 +15,7 @@ import type {
   FaceScanRejectCode,
   FaceScanResult,
 } from './face-scan.types.js';
+import { GroqService } from './groq.service.js';
 
 /** Cap inventory sent to vision analysis (in-stock preferred). */
 const SCAN_CATALOG_LIMIT = 40;
@@ -27,13 +28,23 @@ export class GeminiService {
   private readonly scanModel: any;
   private readonly scanGateModel: any;
   private readonly receiptModel: any;
+  private readonly fallbackModelName: string | null;
 
-  constructor(private readonly config: ConfigService) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly groqService: GroqService,
+  ) {
     const apiKey = this.config.get<string>('GEMINI_API_KEY');
     if (!apiKey) throw new Error('GEMINI_API_KEY is missing from .env');
 
     const modelName =
       this.config.get<string>('GEMINI_MODEL') || 'gemini-2.0-flash';
+    this.fallbackModelName =
+      this.config.get<string>('GEMINI_FALLBACK_MODEL')?.trim() ||
+      'gemini-2.0-flash';
+    if (this.fallbackModelName === modelName) {
+      this.fallbackModelName = null;
+    }
 
     this.genAI = new GoogleGenerativeAI(apiKey);
 
@@ -80,7 +91,13 @@ export class GeminiService {
       generationConfig: { temperature: 0.0, topP: 0.8 },
     });
 
-    this.logger.log(`Gemini service initialized with model: ${modelName}`);
+    this.logger.log(
+      `Gemini service initialized with model: ${modelName}` +
+        (this.fallbackModelName
+          ? ` (fallback model: ${this.fallbackModelName})`
+          : '') +
+        (this.groqService.isConfigured() ? ' + Groq face-scan failover' : ''),
+    );
   }
 
   /**
@@ -275,18 +292,13 @@ export class GeminiService {
     }
 
     try {
-      const rawText = await this.withGeminiRetry(async () => {
-        const result = await this.scanModel.generateContent([
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType: prepared.mimeType,
-              data: prepared.buffer.toString('base64'),
-            },
-          },
-        ]);
-        const response = await result.response;
-        return String(response.text() || '');
+      const rawText = await this.visionTextWithFallback({
+        prompt,
+        imageBuffer: prepared.buffer,
+        mimeType: prepared.mimeType,
+        jsonMode: false,
+        geminiModel: this.scanModel,
+        label: 'face-scan-analysis',
       });
 
       let text = this.cleanMarkdown(rawText)
@@ -305,10 +317,8 @@ export class GeminiService {
       return { usable: true, text, mentionedProducts };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Gemini face scan analysis error: ${msg}`);
-      throw new Error(
-        `Failed to analyze the photo via Gemini: ${msg.slice(0, 200)}`,
-      );
+      this.logger.error(`Face scan analysis error: ${msg}`);
+      throw new Error(`Failed to analyze the photo: ${msg.slice(0, 200)}`);
     }
   }
 
@@ -344,18 +354,13 @@ export class GeminiService {
       `{"usable":true|false,"code":"no_face"|"too_dark"|"too_blurry"|"not_a_person"|"multiple_faces"|"obscured"|null,"reason":"short"}`;
 
     try {
-      const rawText = await this.withGeminiRetry(async () => {
-        const result = await this.scanGateModel.generateContent([
-          { text: prompt },
-          {
-            inlineData: {
-              mimeType,
-              data: buffer.toString('base64'),
-            },
-          },
-        ]);
-        const response = await result.response;
-        return String(response.text() || '');
+      const rawText = await this.visionTextWithFallback({
+        prompt,
+        imageBuffer: buffer,
+        mimeType,
+        jsonMode: true,
+        geminiModel: this.scanGateModel,
+        label: 'face-scan-gate',
       });
 
       const parsed = this.parseFaceScanGate(rawText);
@@ -375,10 +380,8 @@ export class GeminiService {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      this.logger.error(`Gemini face scan gate error: ${msg}`);
-      throw new Error(
-        `Failed to analyze the photo via Gemini: ${msg.slice(0, 200)}`,
-      );
+      this.logger.error(`Face scan gate error: ${msg}`);
+      throw new Error(`Failed to analyze the photo: ${msg.slice(0, 200)}`);
     }
   }
 
@@ -438,7 +441,7 @@ export class GeminiService {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       const transient =
-        /429|503|500|RESOURCE_EXHAUSTED|unavailable|timeout|ECONNRESET|fetch failed/i.test(
+        /429|503|500|RESOURCE_EXHAUSTED|unavailable|high demand|timeout|ECONNRESET|fetch failed/i.test(
           msg,
         );
       if (retries > 0 && transient) {
@@ -447,6 +450,91 @@ export class GeminiService {
         return this.withGeminiRetry(fn, retries - 1);
       }
       throw err;
+    }
+  }
+
+  /**
+   * Face-scan vision only: Gemini (retry) → optional Gemini fallback model → Grok.
+   * Receipt OCR stays Gemini-only.
+   */
+  private async visionTextWithFallback(opts: {
+    prompt: string;
+    imageBuffer: Buffer;
+    mimeType: string;
+    jsonMode: boolean;
+    geminiModel: {
+      generateContent: (parts: unknown) => Promise<{
+        response: { text: () => string };
+      }>;
+    };
+    label: string;
+  }): Promise<string> {
+    const parts = [
+      { text: opts.prompt },
+      {
+        inlineData: {
+          mimeType: opts.mimeType,
+          data: opts.imageBuffer.toString('base64'),
+        },
+      },
+    ];
+
+    const runGemini = async (model: {
+      generateContent: (parts: unknown) => Promise<{
+        response: { text: () => string };
+      }>;
+    }) => {
+      const result = await model.generateContent(parts);
+      const response = await result.response;
+      return String(response.text() || '');
+    };
+
+    try {
+      return await this.withGeminiRetry(() => runGemini(opts.geminiModel));
+    } catch (primaryErr) {
+      const primaryMsg =
+        primaryErr instanceof Error ? primaryErr.message : String(primaryErr);
+      this.logger.warn(
+        `${opts.label}: Gemini primary failed after retry — ${primaryMsg}`,
+      );
+
+      if (this.fallbackModelName) {
+        try {
+          const fb = this.genAI.getGenerativeModel({
+            model: this.fallbackModelName,
+            generationConfig: opts.jsonMode
+              ? {
+                  temperature: 0.1,
+                  topP: 0.8,
+                  responseMimeType: 'application/json',
+                }
+              : { temperature: 0.3, topP: 0.85 },
+          });
+          const text = await this.withGeminiRetry(() => runGemini(fb), 0);
+          this.logger.log(
+            `${opts.label}: recovered via Gemini fallback model ${this.fallbackModelName}`,
+          );
+          return text;
+        } catch (fbErr) {
+          const fbMsg =
+            fbErr instanceof Error ? fbErr.message : String(fbErr);
+          this.logger.warn(
+            `${opts.label}: Gemini fallback model failed — ${fbMsg}`,
+          );
+        }
+      }
+
+      if (this.groqService.isConfigured()) {
+        this.logger.warn(`${opts.label}: falling back to Groq`);
+        return this.groqService.generateVisionText({
+          prompt: opts.prompt,
+          imageBuffer: opts.imageBuffer,
+          mimeType: opts.mimeType,
+          jsonMode: opts.jsonMode,
+        });
+      }
+
+      throw primaryErr;
     }
   }
 
@@ -526,6 +614,8 @@ export class GeminiService {
     transactionNumber: string | null;
     confidence: 'high' | 'medium' | 'low';
     signals: string[];
+    /** True when Gemini OCR failed (quota/503/etc) — ask user to paste TX. */
+    screenshotUnavailable?: boolean;
   }> {
     const prompt = `You analyze Ethiopian mobile-money / bank transfer receipts.
 
@@ -572,30 +662,34 @@ If no transaction number is found, set transactionNumber to null.`;
 
       let rawText = '';
       if (buffer) {
-        const result = await this.receiptModel.generateContent([
-          prompt,
-          {
-            inlineData: {
-              data: buffer.toString('base64'),
-              mimeType,
+        rawText = await this.withGeminiRetry(async () => {
+          const result = await this.receiptModel.generateContent([
+            prompt,
+            {
+              inlineData: {
+                data: buffer!.toString('base64'),
+                mimeType,
+              },
             },
-          },
-        ]);
-        rawText = result.response.text();
+          ]);
+          return result.response.text();
+        });
       } else if (input.text) {
-        const result = await this.receiptModel.generateContent([
-          prompt,
-          input.text,
-        ]);
-        rawText = result.response.text();
+        rawText = await this.withGeminiRetry(async () => {
+          const result = await this.receiptModel.generateContent([
+            prompt,
+            input.text!,
+          ]);
+          return result.response.text();
+        });
       } else {
-        return empty;
+        return { ...empty, screenshotUnavailable: true };
       }
 
       return this.parseReceiptExtract(rawText);
     } catch (err) {
       this.logger.error(`Failed to extract receipt payment via Gemini: ${err}`);
-      return empty;
+      return { ...empty, screenshotUnavailable: true };
     }
   }
 

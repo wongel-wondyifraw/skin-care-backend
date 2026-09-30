@@ -1,25 +1,24 @@
 # Face Scan Image Recognition Improvement Plan
 
-> Applied 2026-09-30. Use this as the reference for the shipped design.
+> Applied 2026-09-30. Groq (not Grok/xAI) for face-scan failover.
 
-**Goal:** Accept most real-world face photos; reply specifically for no-face / extreme dark; never blame the photo for infra failures.
+**Goal:** Accept most real-world face photos; survive Gemini afternoon 503s via Groq vision.
 
-**Architecture:** Local preflight (sharp) → Gemini JSON gate → Gemini analysis → typed Telegram replies. Catalog trimmed to 40 in-stock items.
+**Architecture:** Local preflight → Gemini gate/analysis (retry → optional fallback model → **Groq**) → typed Telegram replies. Receipt OCR stays Gemini-only.
 
-## Phases shipped
+## Env
 
-- [x] Typed reject codes (`no_face`, `too_dark`, …) + infra kinds
-- [x] Local brightness / empty preflight + image downscale
-- [x] Two-step Gemini (gate JSON + analysis)
-- [x] Honest catch messages + Cloudinary/save soft-fail
-- [x] One Gemini retry on transient errors
-- [x] Unit tests (`face-scan.spec.ts`)
+```
+GROQ_API_KEY=          # https://console.groq.com → API Keys (gsk_…)
+GROQ_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+GEMINI_FALLBACK_MODEL=gemini-2.0-flash
+```
+
+Do not commit real keys. Rotate any key that was pasted in chat.
 
 ## Key files
 
-- `src/telegram/face-scan.types.ts`
-- `src/telegram/face-scan-messages.ts`
-- `src/telegram/face-scan-preflight.ts`
-- `src/telegram/gemini.service.ts`
-- `src/telegram/telegram.update.ts` (`handleScanPhoto`)
-- `src/telegram/face-scan.spec.ts`
+- `src/telegram/groq.service.ts`
+- `src/telegram/gemini.service.ts` (`visionTextWithFallback`)
+- `src/telegram/telegram.update.ts` (Back-before-photo)
+- `src/order/order.service.ts` (receipt unavailable copy)
