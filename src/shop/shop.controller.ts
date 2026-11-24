@@ -62,7 +62,7 @@ class ShopOrderItemDto {
 
   @Type(() => Number)
   @IsNumber()
-  @Min(1)
+  @Min(6, { message: 'Minimum wholesale quantity is 6 per item' })
   quantity: number;
 }
 
@@ -120,7 +120,7 @@ class CartItemDto {
 
   @Type(() => Number)
   @IsNumber()
-  @Min(1)
+  @Min(6, { message: 'Minimum wholesale quantity is 6 per item' })
   quantity: number;
 }
 

@@ -228,11 +228,18 @@ export class OrderService {
         : options || {};
 
     const fulfilmentType: FulfilmentType = opts.fulfilmentType ?? 'delivery';
+    const totalUnits = items.reduce(
+      (sum, line) => sum + Math.max(0, Math.floor(Number(line.quantity) || 0)),
+      0,
+    );
+    const isFreeDelivery = totalUnits >= 12;
     const deliveryFee =
-      fulfilmentType === 'pickup' ? 0 : Number(opts.deliveryFee) || 0;
+      fulfilmentType === 'pickup' || isFreeDelivery
+        ? 0
+        : Number(opts.deliveryFee) || 0;
 
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const deliveryDate = new Date();
+    deliveryDate.setDate(deliveryDate.getDate() + 4);
 
     let subtotal = 0;
     const productInfos: {
@@ -248,8 +255,10 @@ export class OrderService {
 
     for (const line of items) {
       const quantity = Math.floor(Number(line.quantity));
-      if (!Number.isFinite(quantity) || quantity < 1) {
-        throw new BadRequestException('Quantity must be at least 1');
+      if (!Number.isFinite(quantity) || quantity < 6) {
+        throw new BadRequestException(
+          'Minimum wholesale order is 6 units per item',
+        );
       }
 
       const product = productById.get(line.productId);
@@ -372,7 +381,7 @@ export class OrderService {
         fulfilmentType,
         pickupLocationId: opts.pickupLocationId ?? null,
         deliveryFee: lineDeliveryFee,
-        expectedDeliveryDate: tomorrow,
+        expectedDeliveryDate: deliveryDate,
         advancePaymentAmount: lineAdvance,
         amountPaid,
         paymentStage,
@@ -1000,11 +1009,11 @@ export class OrderService {
     const product = order.product?.name ?? 'Product';
     const qty = order.quantity ?? 1;
     const expected = order.expectedDeliveryDate
-      ? new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
+      ? `3–5 days (${new Date(order.expectedDeliveryDate).toLocaleDateString('en-US', {
           month: 'short',
           day: 'numeric',
-        })
-      : 'Tomorrow';
+        })})`
+      : '3–5 days';
     const location =
       order.fulfilmentType === 'pickup'
         ? `🏪 ${order.pickupLocation?.name || 'Store pickup'}`
@@ -1345,11 +1354,11 @@ export class OrderService {
     if (telegramId == null) return;
 
     const expected = first.expectedDeliveryDate
-      ? new Date(first.expectedDeliveryDate).toLocaleDateString('en-US', {
+      ? `3–5 days (${new Date(first.expectedDeliveryDate).toLocaleDateString('en-US', {
           month: 'short',
           day: 'numeric',
-        })
-      : 'Tomorrow';
+        })})`
+      : '3–5 days';
     const location =
       first.fulfilmentType === 'pickup'
         ? first.pickupLocation?.name || 'Store pickup'

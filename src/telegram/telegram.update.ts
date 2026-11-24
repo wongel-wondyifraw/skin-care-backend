@@ -85,13 +85,13 @@ export class TelegramUpdate {
 
   private productsButton(telegramId?: number): ReplyButton {
     const base = this.shopWebAppUrl();
-    if (!base) return { text: 'Products' };
+    if (!base) return { text: 'Order Now' };
     if (!telegramId) {
-      return { text: 'Products', web_app: { url: base } };
+      return { text: 'Order Now', web_app: { url: base } };
     }
     const sep = base.includes('?') ? '&' : '?';
     return {
-      text: 'Products',
+      text: 'Order Now',
       web_app: { url: `${base}${sep}telegramId=${telegramId}` },
     };
   }
@@ -116,13 +116,11 @@ export class TelegramUpdate {
     return labels.some((l) => key.includes(this.menuKey(l)));
   }
 
-  /** Main user reply keyboard — Products opens the Mini App when configured. */
+  /** Main user reply keyboard — Order Now opens the Mini App when configured. */
   private userKeyboard(telegramId?: number) {
     return {
       keyboard: [
-        [{ text: 'Profile'}, { text: 'Recommended'}],
-        [{ text: 'Scan Face'}, this.productsButton(telegramId)],
-        [{ text: 'My Orders'}],
+        [this.productsButton(telegramId)],
       ],
       resize_keyboard: true,
     };
@@ -161,20 +159,20 @@ export class TelegramUpdate {
     const existing = await this.customerService.findByTelegramId(telegramId);
     if (existing) {
       await ctx.reply(
-        `Welcome back, ${existing.fullName}! \n\n`+
-          `You are already registered with Medaf Skin Care. \n`+
-          `We will keep you updated on new arrivals and offers!`,
+        `Welcome back, ${existing.fullName}! \n\n` +
+          `Welcome to Medaf Wholesale. \n` +
+          `Tap "Order Now" below to browse wholesale items and place your orders!`,
         { reply_markup: this.userKeyboard(ctx.from?.id) },
       );
       return;
     }
 
-    this.sessions.set(chatId, { step: 'awaiting_name'});
+    this.sessions.set(chatId, { step: 'awaiting_name' });
 
     await ctx.reply(
-      `Welcome to Medaf Skin Care, ${firstName}! \n\n`+
-        `We offer premium skincare products tailored for every skin type.\n\n`+
-        `Let's get you registered — it only takes a moment.\n\n`+
+      `Welcome to Medaf Wholesale, ${firstName}! \n\n` +
+        `We offer quality products with wholesale bulk pricing and fast delivery.\n\n` +
+        `Let's get you registered — it only takes a moment.\n\n` +
         `What is your full name?`,
     );
   }
@@ -1254,6 +1252,14 @@ export class TelegramUpdate {
       return;
     }
 
+    if (this.isPhotoMessage(ctx) && !orderSession) {
+      await ctx.reply(
+        `Welcome to Medaf Wholesale!\nTo browse our catalog and place your order, please tap "Order Now" below.`,
+        { reply_markup: this.userKeyboard(ctx.from?.id) },
+      );
+      return;
+    }
+
     // ── Order flow ───────────────────────────────────────────────
     if (orderSession) {
       await this.handleOrderFlow(ctx, chatId, orderSession, text, message);
@@ -1297,17 +1303,18 @@ export class TelegramUpdate {
       }
     }
 
-    // ── Recommended (legacy "Get Advice" still accepted) ─────────
-    if (this.menuEq(text, 'Recommended')|| this.menuEq(text, 'Get Advice')) {
+    // ── Recommended / AI Scan / Advice redirected to Order Now ───
+    if (
+      this.menuEq(text, 'Recommended') ||
+      this.menuEq(text, 'Get Advice') ||
+      this.menuEq(text, 'Scan Face')
+    ) {
       this.catalogSessions.delete(chatId);
       this.scanSessions.delete(chatId);
-      await this.handleGetAdvice(ctx, chatId);
-      return;
-    }
-
-    if (this.menuEq(text, 'Scan Face')) {
-      this.catalogSessions.delete(chatId);
-      await this.startFaceScan(ctx, chatId);
+      await ctx.reply(
+        `Welcome to Medaf Wholesale!\nPlease tap "Order Now" below to browse our wholesale catalog and place your order.`,
+        { reply_markup: this.userKeyboard(ctx.from?.id) },
+      );
       return;
     }
 
@@ -1318,8 +1325,8 @@ export class TelegramUpdate {
       return;
     }
 
-    // ── Products browse (fallback when Mini App URL is not set) ──
-    if (this.menuEq(text, 'Products')) {
+    // ── Products / Order Now browse (fallback when Mini App URL is not set) ──
+    if (this.menuEq(text, 'Order Now') || this.menuEq(text, 'Products')) {
       this.catalogSessions.delete(chatId);
       await this.showProductsMenu(ctx);
       return;
@@ -1404,6 +1411,7 @@ export class TelegramUpdate {
 
   private isKnownKeyboardLabel(text: string): boolean {
     return [
+      'Order Now',
       'Profile',
       'Get Advice',
       'Recommended',
@@ -1736,17 +1744,20 @@ export class TelegramUpdate {
     // ── Step 1: Awaiting quantity ──
     if (session.step === 'awaiting_quantity') {
       const qty = Number.parseInt(text, 10);
-      if (!Number.isFinite(qty) || qty < 1) {
-        await ctx.reply(`Please tap 1–4 or type a whole number (1 or more).`, {
-          reply_markup: {
-            keyboard: [
-              [{ text: '1'}, { text: '2'}, { text: '3'}, { text: '4'}],
-              [{ text: 'Cancel order'}],
-            ],
-            resize_keyboard: true,
-            one_time_keyboard: true,
+      if (!Number.isFinite(qty) || qty < 6) {
+        await ctx.reply(
+          `Minimum wholesale order is 6 units per item. Please tap a quantity or type a number (6 or more).`,
+          {
+            reply_markup: {
+              keyboard: [
+                [{ text: '6' }, { text: '12' }, { text: '18' }, { text: '24' }],
+                [{ text: 'Cancel order' }],
+              ],
+              resize_keyboard: true,
+              one_time_keyboard: true,
+            },
           },
-        });
+        );
         return;
       }
 
@@ -1756,8 +1767,8 @@ export class TelegramUpdate {
           {
             reply_markup: {
               keyboard: [
-                [{ text: '1'}, { text: '2'}, { text: '3'}, { text: '4'}],
-                [{ text: 'Cancel order'}],
+                [{ text: '6' }, { text: '12' }, { text: '18' }, { text: '24' }],
+                [{ text: 'Cancel order' }],
               ],
               resize_keyboard: true,
               one_time_keyboard: true,
@@ -2242,20 +2253,31 @@ export class TelegramUpdate {
     session.deliveryLat = lat;
     session.deliveryLon = lon;
     session.deliveryDistanceKm = feeRes.distanceKm;
-    session.deliveryFee = feeRes.fee;
+    const isFreeDelivery = (session.quantity ?? 1) >= 12;
+    session.deliveryFee = isFreeDelivery ? 0 : feeRes.fee;
     session.deliveryAddress = 'Your location';
     if (reverse?.displayName) {
       session.deliveryAddress = `Your location · ${reverse.displayName.split(',').slice(0, 2).join(',').trim()}`;
     }
     this.orderSessions.set(chatId, session);
 
-    await ctx.reply(
-      `*Your location*\n` +
-        `Delivery fee: *${feeRes.fee.toFixed(2)} ETB*` +
-        (feeRes.bandLabel ? ` (${feeRes.bandLabel})` : '') +
-        `\n~${feeRes.distanceKm.toFixed(1)} km`,
-      { parse_mode: 'Markdown' },
-    );
+    if (isFreeDelivery) {
+      await ctx.reply(
+        `*Your location*\n` +
+          `🎉 Delivery fee: *0.00 ETB (FREE Wholesale Delivery — 12+ items)*\n` +
+          `~${feeRes.distanceKm.toFixed(1)} km (Standard fee: ${feeRes.fee.toFixed(2)} ETB waived)`,
+        { parse_mode: 'Markdown' },
+      );
+    } else {
+      await ctx.reply(
+        `*Your location*\n` +
+          `Delivery fee: *${feeRes.fee.toFixed(2)} ETB*` +
+          (feeRes.bandLabel ? ` (${feeRes.bandLabel})` : '') +
+          `\n~${feeRes.distanceKm.toFixed(1)} km\n` +
+          `💡 *Tip: Order 12 or more items to get FREE delivery!*`,
+        { parse_mode: 'Markdown' },
+      );
+    }
 
     const origin = await this.settingsService.getDeliveryOrigin();
     if (origin.description?.trim()) {
@@ -2285,12 +2307,17 @@ export class TelegramUpdate {
     const paymentInfo = await this.settingsService.getPaymentInfo();
     const bank = paymentInfo.bankAccount;
     const telebirr = paymentInfo.telebirr;
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    const expectedDate = tomorrow.toLocaleDateString('en-US', {
+    const expMin = new Date();
+    expMin.setDate(expMin.getDate() + 3);
+    const expMax = new Date();
+    expMax.setDate(expMax.getDate() + 5);
+    const expectedDate = `3–5 days (${expMin.toLocaleDateString('en-US', {
       month: 'short',
       day: 'numeric',
-    });
+    })} – ${expMax.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+    })})`;
 
     const isPickup = session.fulfilmentType === 'pickup';
     const locationLine = isPickup
@@ -2390,8 +2417,8 @@ export class TelegramUpdate {
     paymentEvidence: string,
     paymentMethod: string,
   ) {
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const deliveryDate = new Date();
+    deliveryDate.setDate(deliveryDate.getDate() + 4);
 
     try {
       const quantity = session.quantity ?? 1;
@@ -2481,7 +2508,7 @@ export class TelegramUpdate {
         fulfilmentType: session.fulfilmentType ?? 'delivery',
         pickupLocationId: session.pickupLocationId ?? null,
         deliveryFee,
-        expectedDeliveryDate: tomorrow,
+        expectedDeliveryDate: deliveryDate,
         advancePaymentAmount: advance,
         amountPaid: paid.amountPaid,
         paymentStage: paid.paymentStage,
@@ -3047,28 +3074,21 @@ export class TelegramUpdate {
     }
 
     session.phone = phone;
-    session.step = 'awaiting_skin_type';
+    session.skinTypeId = null;
+    session.step = 'awaiting_address';
     this.sessions.set(chatId, session);
 
-    const skinTypes = await this.skinTypeService.findAll();
-
-    if (skinTypes.length === 0) {
-      session.skinTypeId = null;
-      session.step = 'awaiting_address';
-      this.sessions.set(chatId, session);
-
-      await ctx.reply(
-        `Got it! \n\nFinally, what is your delivery location? Send us your GPS location or type your address.`,
-        {
-          reply_markup: {
-            keyboard: [[{ text: 'Share Location', request_location: true }]],
-            resize_keyboard: true,
-            one_time_keyboard: true,
-          },
+    await ctx.reply(
+      `Got it! \n\nFinally, what is your delivery location? Send us your GPS location or type your address.`,
+      {
+        reply_markup: {
+          keyboard: [[{ text: 'Share Location', request_location: true }]],
+          resize_keyboard: true,
+          one_time_keyboard: true,
         },
-      );
-      return;
-    }
+      },
+    );
+    return;
 
     const keyboard = skinTypes.map((st) => [{ text: st.name }]);
 
