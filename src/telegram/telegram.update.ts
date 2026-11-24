@@ -3089,19 +3089,6 @@ export class TelegramUpdate {
       },
     );
     return;
-
-    const keyboard = skinTypes.map((st) => [{ text: st.name }]);
-
-    await ctx.reply(
-      `Perfect! \n\nWhat is your skin type? Choose from the options below:`,
-      {
-        reply_markup: {
-          keyboard,
-          resize_keyboard: true,
-          one_time_keyboard: true,
-        },
-      },
-    );
   }
 
   private async handleSkinType(
